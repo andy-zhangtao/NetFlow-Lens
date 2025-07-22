@@ -1,32 +1,63 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# NetFlow Lens 构建产物
+netflow-lens
+build/
+dist/
+
+# Go 相关
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary, built with `go test -c`
 *.test
-
-# Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
 # Go workspace file
 go.work
 go.work.sum
 
-# env file
-.env
+# Go vendor
+vendor/
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# 环境变量文件
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 临时文件
+tmp/
+temp/
+
+# pcap 测试文件
+*.pcap
+*.pcapng
+
+# 调试文件
+debug
+
+# 性能分析文件
+*.prof
+*.pprof
+
+# 配置文件（如果包含敏感信息）
+config/local.yaml
+config/development.yaml
