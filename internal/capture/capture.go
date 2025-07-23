@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -161,8 +162,8 @@ func (c *Capturer) processPackets() {
 		packet, err := packetSource.NextPacket()
 		if err != nil {
 			if err.Error() == "EOF" && c.sourceType == "file" {
-				log.Println("pcap文件读取完成")
-				c.isRunning = false
+				log.Printf("pcap文件读取完成，共读取 %d 个数据包", c.packetCount)
+				// 不要立即设置isRunning为false，让后台处理完剩余数据包
 				break
 			}
 			log.Printf("读取数据包错误: %v", err)
@@ -176,7 +177,7 @@ func (c *Capturer) processPackets() {
 			select {
 			case c.packets <- *parsedPacket:
 				c.packetCount++
-				if c.packetCount%100 == 0 {
+				if c.packetCount%50 == 0 { // 降低日志频率
 					log.Printf("已处理 %d 个数据包", c.packetCount)
 				}
 			default:
@@ -185,7 +186,13 @@ func (c *Capturer) processPackets() {
 		}
 	}
 
-	log.Println("数据包处理协程结束")
+	// 等待一小段时间让analyzer处理完剩余数据包
+	if c.sourceType == "file" {
+		log.Printf("等待analyzer处理完剩余数据包...")
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	log.Printf("数据包处理协程结束，总共处理了 %d 个数据包", c.packetCount)
 }
 
 // parsePacket 解析单个数据包

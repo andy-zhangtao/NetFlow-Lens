@@ -30,6 +30,22 @@ func NewAnalyzer() *Analyzer {
 	}
 }
 
+// ClearData 清空所有数据，用于加载新的PCAP文件
+func (a *Analyzer) ClearData() {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+
+	// 清空连接数据
+	a.connections = make(map[string]*models.Connection)
+
+	// 清空数据包缓冲区
+	a.recentPackets = make([]models.Packet, 0, a.maxPackets)
+	a.packetBuffer = make([]models.Packet, a.maxPackets)
+	a.bufferIndex = 0
+
+	log.Println("Analyzer数据已清空，准备处理新数据")
+}
+
 // ProcessPacket processes a single packet and updates connection state
 func (a *Analyzer) ProcessPacket(packet models.Packet) {
 	a.mutex.Lock()
@@ -39,9 +55,21 @@ func (a *Analyzer) ProcessPacket(packet models.Packet) {
 	a.packetBuffer[a.bufferIndex] = packet
 	a.bufferIndex = (a.bufferIndex + 1) % a.maxPackets
 
+	// 同时添加到recentPackets切片以便调试
+	if len(a.recentPackets) >= a.maxPackets {
+		// 如果切片满了，移除最老的元素
+		a.recentPackets = a.recentPackets[1:]
+	}
+	a.recentPackets = append(a.recentPackets, packet)
+
 	// 处理连接
 	if packet.Protocol == "TCP" || packet.Protocol == "UDP" {
 		a.processConnection(packet)
+	}
+
+	// 调试日志
+	if len(a.recentPackets)%50 == 0 {
+		log.Printf("Analyzer已处理 %d 个数据包，缓冲区索引: %d", len(a.recentPackets), a.bufferIndex)
 	}
 }
 
@@ -168,23 +196,28 @@ func (a *Analyzer) GetRecentPackets(limit int) []models.Packet {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
 
-	if limit > a.maxPackets {
-		limit = a.maxPackets
+	if limit > len(a.recentPackets) {
+		limit = len(a.recentPackets)
 	}
 
+	if limit == 0 {
+		log.Printf("GetRecentPackets: 没有数据包可返回，recentPackets长度: %d", len(a.recentPackets))
+		return []models.Packet{}
+	}
+
+	// 从recentPackets切片中获取最新的数据包（倒序）
 	packets := make([]models.Packet, 0, limit)
-
-	// 从环形缓冲区中获取最新的数据包
-	for i := 0; i < limit && i < a.maxPackets; i++ {
-		index := (a.bufferIndex - 1 - i + a.maxPackets) % a.maxPackets
-		packet := a.packetBuffer[index]
-
-		// 检查是否是有效数据包（时间戳不为零）
-		if !packet.Timestamp.IsZero() {
-			packets = append(packets, packet)
-		}
+	startIndex := len(a.recentPackets) - limit
+	if startIndex < 0 {
+		startIndex = 0
 	}
 
+	// 复制数据包，按时间倒序排列（最新的在前）
+	for i := len(a.recentPackets) - 1; i >= startIndex && len(packets) < limit; i-- {
+		packets = append(packets, a.recentPackets[i])
+	}
+
+	log.Printf("GetRecentPackets: 返回 %d 个数据包 (请求: %d, 可用: %d)", len(packets), limit, len(a.recentPackets))
 	return packets
 }
 

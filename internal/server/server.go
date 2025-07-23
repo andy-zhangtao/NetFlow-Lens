@@ -470,6 +470,9 @@ func (s *Server) handlePCAPLoad(w http.ResponseWriter, r *http.Request) {
 	// 停止当前捕获
 	s.capturer.Stop()
 
+	// 清空analyzer中的旧数据
+	s.analyzer.ClearData()
+
 	// 加载PCAP文件
 	filePath := filepath.Join(s.uploadDir, req.Filename)
 	if err := s.capturer.StartFileCapture(filePath); err != nil {
