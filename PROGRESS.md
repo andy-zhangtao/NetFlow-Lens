@@ -68,6 +68,7 @@ NetFlow Lens 是一个网络流量可视化学习工具，旨在通过直观的�
 - ✅ **Git配置** - 更新.gitignore，排除构建产物
 - ✅ **编译验证** - 确保应用可以正常编译和运行
 - ✅ **依赖管理** - 添加gopacket等必要依赖
+- ✅ **命令行参数** - 支持自定义端口、版本信息、帮助等
 
 ## 📂 文件结构详解
 
@@ -79,12 +80,23 @@ NetFlow Lens 是一个网络流量可视化学习工具，旨在通过直观的�
 5. **pkg/models/models.go** - 数据模型定义
 6. **Makefile** - 构建脚本，支持多种开发任务
 
+### 启动服务器
+```bash
+# 使用默认端口8080启动
+make run                    # 或 ./netflow-lens
+make dev                    # 开发模式
+
+# 使用自定义端口启动
+make run ARGS='-port 9090'           # 通过Makefile指定端口
+make dev ARGS='-port 8888'           # 开发模式指定端口
+./netflow-lens -port 3000            # 直接指定端口
+./netflow-lens -help                 # 查看所有选项
+./netflow-lens -version              # 查看版本信息
+```
+
 ### 当前API接口
 ```bash
-# 启动服务器
-make run  # 或 ./netflow-lens
-
-# 基础接口
+# 基础接口 (假设使用默认8080端口)
 curl http://localhost:8080/              # 现代化主页面
 curl http://localhost:8080/api/status    # API状态（v0.2.0）
 curl http://localhost:8080/api/connections # 真实连接列表

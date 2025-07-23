@@ -40,12 +40,12 @@ build-local:
 # 运行应用
 run: build-local
 	@echo "启动 $(APP_NAME)..."
-	./$(APP_NAME)
+	./$(APP_NAME) $(ARGS)
 
 # 开发模式（热重载需要额外工具）
 dev:
 	@echo "开发模式启动..."
-	$(GO) run $(CMD_DIR)
+	$(GO) run $(CMD_DIR) $(ARGS)
 
 # 清理构建文件
 clean:
@@ -155,9 +155,15 @@ help:
 	@echo "基础命令:"
 	@echo "  make build        - 构建应用到 build/ 目录"
 	@echo "  make build-local  - 快速构建到当前目录"
-	@echo "  make run          - 构建并运行应用"
-	@echo "  make dev          - 开发模式运行"
+	@echo "  make run          - 构建并运行应用 (默认8080端口)"
+	@echo "  make dev          - 开发模式运行 (默认8080端口)"
 	@echo "  make clean        - 清理构建文件"
+	@echo ""
+	@echo "端口参数示例:"
+	@echo "  make run ARGS='-port 9090'     - 使用9090端口运行"
+	@echo "  make dev ARGS='-port 8888'     - 开发模式使用8888端口"
+	@echo "  ./netflow-lens -port 3000      - 直接运行指定端口"
+	@echo "  ./netflow-lens -help           - 查看所有命令行选项"
 	@echo ""
 	@echo "测试和检查:"
 	@echo "  make test         - 运行测试"
