@@ -11,7 +11,13 @@
       "Bash(ls:*)",
       "Bash(timeout:*)",
       "Bash(gtimeout:*)",
-      "Bash(make:*)"
+      "Bash(make:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(go get:*)",
+      "Bash(./build/netflow-lens:*)",
+      "Bash(go test:*)",
+      "Bash(rm:*)"
     ],
     "deny": []
   }

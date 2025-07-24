@@ -59,10 +59,47 @@ test:
 	@echo "运行测试..."
 	$(GO) test -v ./...
 
+# 运行测试带覆盖率
+test-coverage:
+	@echo "运行测试并生成覆盖率报告..."
+	$(GO) test -coverprofile=coverage.out ./...
+	$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "覆盖率报告已生成: coverage.html"
+
+# 运行单个模块测试
+test-models:
+	@echo "测试 models 模块..."
+	$(GO) test -v ./pkg/models
+
+test-analyzer:
+	@echo "测试 analyzer 模块..."
+	$(GO) test -v ./internal/analyzer
+
+test-capture:
+	@echo "测试 capture 模块..."
+	$(GO) test -v ./internal/capture
+
+test-server:
+	@echo "测试 server 模块..."
+	$(GO) test -v ./internal/server
+
 # 运行基准测试
 bench:
 	@echo "运行基准测试..."
 	$(GO) test -bench=. -benchmem ./...
+
+# 运行性能测试
+test-performance: bench
+	@echo "性能测试完成"
+
+# 运行集成测试
+test-integration:
+	@echo "运行集成测试..."
+	$(GO) test -v ./tests/...
+
+# 运行所有测试（单元测试 + 集成测试）
+test-all: test test-integration
+	@echo "所有测试完成"
 
 # 代码格式化
 fmt:
@@ -137,6 +174,10 @@ lint: fmt vet
 # 完整检查（格式化 + 检查 + 测试 + 构建）
 check: lint test build
 	@echo "完整检查完成"
+
+# 持续集成检查
+ci: lint test test-coverage
+	@echo "持续集成检查完成"
 
 # 发布准备
 release: clean check build-all
