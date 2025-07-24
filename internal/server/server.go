@@ -16,15 +16,36 @@ import (
 	"github.com/andy-zhangtao/NetFlow-Lens/internal/analyzer"
 	"github.com/andy-zhangtao/NetFlow-Lens/internal/capture"
 	"github.com/andy-zhangtao/NetFlow-Lens/pkg/models"
+	"github.com/gorilla/websocket"
 )
 
+// WebSocket客户端连接
+type WSClient struct {
+	conn   *websocket.Conn
+	send   chan []byte
+	server *Server
+	id     string
+}
+
+// WebSocket消息类型
+type WSMessage struct {
+	Type string      `json:"type"`
+	Data interface{} `json:"data"`
+}
+
 type Server struct {
-	mux       *http.ServeMux
-	capturer  *capture.Capturer
-	analyzer  *analyzer.Analyzer
-	pcapFiles map[string]*models.PCAPFileInfo
-	pcapMutex sync.RWMutex
-	uploadDir string
+	mux         *http.ServeMux
+	capturer    *capture.Capturer
+	analyzer    *analyzer.Analyzer
+	pcapFiles   map[string]*models.PCAPFileInfo
+	pcapMutex   sync.RWMutex
+	uploadDir   string
+	
+	// WebSocket相关
+	upgrader    websocket.Upgrader
+	clients     map[string]*WSClient
+	clientMutex sync.RWMutex
+	broadcast   chan []byte
 }
 
 func NewServer() *Server {
@@ -40,11 +61,24 @@ func NewServer() *Server {
 		analyzer:  analyzer.NewAnalyzer(),
 		pcapFiles: make(map[string]*models.PCAPFileInfo),
 		uploadDir: uploadDir,
+		
+		// WebSocket初始化
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true // 允许所有来源，生产环境应该更严格
+			},
+		},
+		clients:   make(map[string]*WSClient),
+		broadcast: make(chan []byte, 256),
 	}
 	s.setupRoutes()
 
-	// 启动后台任务处理数据包
+	// 设置TCP状态变化回调
+	s.analyzer.SetTCPStateChangeCallback(s.broadcastTCPStateUpdate)
+
+	// 启动后台任务
 	go s.startPacketProcessing()
+	go s.startWebSocketHub()
 
 	return s
 }
@@ -82,6 +116,10 @@ func (s *Server) setupRoutes() {
 	// TCP状态可视化相关
 	s.mux.HandleFunc("/api/tcp/visualization", s.handleTCPVisualization)
 	s.mux.HandleFunc("/api/tcp/connection/", s.handleTCPConnectionState)
+
+	// WebSocket相关
+	s.mux.HandleFunc("/ws", s.handleWebSocket)
+	s.mux.HandleFunc("/api/ws/status", s.handleWSStatus)
 
 	// 静态文件服务
 	s.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
@@ -175,6 +213,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             <div class="card">
                 <h3>📊 系统状态</h3>
                 <p><span class="status-indicator status-running"></span>服务器运行正常</p>
+                <p><span class="status-indicator status-stopped" id="ws-status-indicator"></span>WebSocket连接状态</p>
                 <p><a href="/api/status" class="btn">查看API状态</a></p>
                 <p><a href="/api/connections" class="btn btn-secondary">查看连接</a></p>
             </div>
@@ -475,8 +514,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         }
         
         function startTCPVisualizationUpdates() {
-            // 每2秒更新一次TCP状态可视化
-            setInterval(updateTCPVisualization, 2000);
+            // 如果WebSocket连接正常，则不需要轮询
+            setInterval(function() {
+                if (!wsConnected) {
+                    // 只有在WebSocket未连接时才使用HTTP轮询
+                    updateTCPVisualization();
+                }
+            }, 2000);
         }
 
         function startPacketUpdates() {
@@ -510,6 +554,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         // 全局变量存储当前的TCP数据
         let currentTCPData = null;
         let lastStateTransitions = [];
+        
+        // WebSocket相关变量
+        let ws = null;
+        let wsReconnectTimer = null;
+        let wsConnected = false;
+        let wsReconnectAttempts = 0;
+        const wsMaxReconnectAttempts = 5;
 
         // TCP状态信息配置
         const stateInfoMap = {
@@ -752,6 +803,114 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             }
         }
 
+        // WebSocket连接管理
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.CONNECTING) {
+                return; // 避免重复连接
+            }
+            
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + window.location.host + '/ws';
+            
+            try {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = function(event) {
+                    console.log('WebSocket连接已建立');
+                    wsConnected = true;
+                    wsReconnectAttempts = 0;
+                    updateConnectionStatus(true);
+                    
+                    // 清除重连定时器
+                    if (wsReconnectTimer) {
+                        clearTimeout(wsReconnectTimer);
+                        wsReconnectTimer = null;
+                    }
+                };
+                
+                ws.onmessage = function(event) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        handleWebSocketMessage(message);
+                    } catch (error) {
+                        console.error('解析WebSocket消息失败:', error);
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    console.log('WebSocket连接已关闭:', event.code, event.reason);
+                    wsConnected = false;
+                    updateConnectionStatus(false);
+                    
+                    // 自动重连
+                    if (wsReconnectAttempts < wsMaxReconnectAttempts) {
+                        wsReconnectAttempts++;
+                        const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 30000);
+                        console.log('尝试重连WebSocket，延迟:', delay + 'ms', '尝试次数:', wsReconnectAttempts);
+                        
+                        wsReconnectTimer = setTimeout(connectWebSocket, delay);
+                    } else {
+                        console.error('WebSocket重连次数已达上限，停止重连');
+                    }
+                };
+                
+                ws.onerror = function(error) {
+                    console.error('WebSocket连接错误:', error);
+                    wsConnected = false;
+                    updateConnectionStatus(false);
+                };
+                
+            } catch (error) {
+                console.error('创建WebSocket连接失败:', error);
+            }
+        }
+        
+        // 处理WebSocket消息
+        function handleWebSocketMessage(message) {
+            if (message.type === 'tcp_state_update') {
+                // 实时更新TCP状态数据
+                const newData = message.data;
+                
+                // 检查状态转换动画
+                checkForStateTransitions(newData);
+                
+                // 保存当前数据
+                currentTCPData = newData;
+                
+                // 更新可视化界面
+                updateTCPStats(newData.state_statistics);
+                updateTCPConnections(newData.active_connections);
+                updateStateNodes(newData.state_statistics);
+                document.getElementById('transitions-count').textContent = newData.recent_transitions.length;
+            }
+        }
+        
+        // 更新连接状态指示器
+        function updateConnectionStatus(connected) {
+            const indicator = document.getElementById('ws-status-indicator');
+            if (!indicator) return;
+            
+            if (connected) {
+                indicator.className = 'status-indicator status-running';
+                indicator.title = 'WebSocket连接正常，实时数据推送活跃';
+            } else {
+                indicator.className = 'status-indicator status-stopped';
+                indicator.title = 'WebSocket连接断开，使用轮询模式';
+            }
+        }
+        
+        // 断开WebSocket连接
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
+        }
+
         // 页面加载时初始化
         window.onload = function() {
             loadPCAPList();
@@ -759,6 +918,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             updateTCPVisualization();
             // 初始化交互功能
             initializeInteractions();
+            // 建立WebSocket连接
+            connectWebSocket();
+        };
+        
+        // 页面卸载时断开WebSocket
+        window.onbeforeunload = function() {
+            disconnectWebSocket();
         };
     </script>
 </body>
@@ -1286,4 +1452,207 @@ func (s *Server) handleTCPConnectionState(w http.ResponseWriter, r *http.Request
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(connState)
+}
+
+// WebSocket处理器
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket升级失败: %v", err)
+		return
+	}
+
+	// 生成客户端ID
+	clientID := fmt.Sprintf("client_%d", time.Now().UnixNano())
+	
+	client := &WSClient{
+		conn:   conn,
+		send:   make(chan []byte, 256),
+		server: s,
+		id:     clientID,
+	}
+
+	// 注册客户端
+	s.clientMutex.Lock()
+	s.clients[clientID] = client
+	s.clientMutex.Unlock()
+
+	log.Printf("新的WebSocket客户端连接: %s", clientID)
+
+	// 启动客户端goroutines
+	go client.writePump()
+	go client.readPump()
+
+	// 立即发送当前TCP状态数据
+	s.sendTCPDataToClient(client)
+}
+
+// WebSocket客户端写入处理
+func (c *WSClient) writePump() {
+	ticker := time.NewTicker(54 * time.Second)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			// 添加队列中的其他消息
+			n := len(c.send)
+			for i := 0; i < n; i++ {
+				w.Write([]byte{'\n'})
+				w.Write(<-c.send)
+			}
+
+			if err := w.Close(); err != nil {
+				return
+			}
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// WebSocket客户端读取处理
+func (c *WSClient) readPump() {
+	defer func() {
+		c.server.unregisterClient(c.id)
+		c.conn.Close()
+	}()
+
+	c.conn.SetReadLimit(512)
+	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	for {
+		_, _, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket错误: %v", err)
+			}
+			break
+		}
+	}
+}
+
+// WebSocket Hub - 管理所有客户端连接
+func (s *Server) startWebSocketHub() {
+	for {
+		select {
+		case message := <-s.broadcast:
+			s.clientMutex.RLock()
+			for _, client := range s.clients {
+				select {
+				case client.send <- message:
+				default:
+					close(client.send)
+					delete(s.clients, client.id)
+				}
+			}
+			s.clientMutex.RUnlock()
+		}
+	}
+}
+
+// 注销客户端
+func (s *Server) unregisterClient(clientID string) {
+	s.clientMutex.Lock()
+	defer s.clientMutex.Unlock()
+	
+	if client, ok := s.clients[clientID]; ok {
+		close(client.send)
+		delete(s.clients, clientID)
+		log.Printf("WebSocket客户端断开连接: %s", clientID)
+	}
+}
+
+// 向特定客户端发送TCP数据
+func (s *Server) sendTCPDataToClient(client *WSClient) {
+	data := s.analyzer.GetTCPVisualizationData()
+	message := WSMessage{
+		Type: "tcp_state_update",
+		Data: data,
+	}
+	
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("序列化WebSocket消息失败: %v", err)
+		return
+	}
+	
+	select {
+	case client.send <- messageBytes:
+	default:
+		close(client.send)
+		s.unregisterClient(client.id)
+	}
+}
+
+// 广播TCP状态更新到所有客户端
+func (s *Server) broadcastTCPStateUpdate() {
+	data := s.analyzer.GetTCPVisualizationData()
+	message := WSMessage{
+		Type: "tcp_state_update",
+		Data: data,
+	}
+	
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("序列化广播消息失败: %v", err)
+		return
+	}
+	
+	select {
+	case s.broadcast <- messageBytes:
+	default:
+		log.Println("广播通道已满，跳过本次更新")
+	}
+}
+
+// 获取WebSocket连接状态
+func (s *Server) getWebSocketStatus() map[string]interface{} {
+	s.clientMutex.RLock()
+	defer s.clientMutex.RUnlock()
+	
+	return map[string]interface{}{
+		"connected_clients": len(s.clients),
+		"client_ids":        func() []string {
+			ids := make([]string, 0, len(s.clients))
+			for id := range s.clients {
+				ids = append(ids, id)
+			}
+			return ids
+		}(),
+	}
+}
+
+// handleWSStatus returns WebSocket connection status
+func (s *Server) handleWSStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	status := s.getWebSocketStatus()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }

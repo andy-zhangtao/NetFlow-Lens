@@ -9,17 +9,21 @@ import (
 	"github.com/andy-zhangtao/NetFlow-Lens/pkg/models"
 )
 
+// TCPStateChangeCallback is called when TCP state changes
+type TCPStateChangeCallback func()
+
 // Analyzer processes network packets and maintains connection state
 type Analyzer struct {
-	connections       map[string]*models.Connection
-	recentPackets     []models.Packet
-	mutex             sync.RWMutex
-	maxPackets        int
-	packetBuffer      []models.Packet
-	bufferIndex       int
-	stateTransitions  []models.TCPStateTransition
-	connectionStats   map[string]*models.TCPConnectionState
-	maxTransitions    int
+	connections         map[string]*models.Connection
+	recentPackets       []models.Packet
+	mutex               sync.RWMutex
+	maxPackets          int
+	packetBuffer        []models.Packet
+	bufferIndex         int
+	stateTransitions    []models.TCPStateTransition
+	connectionStats     map[string]*models.TCPConnectionState
+	maxTransitions      int
+	stateChangeCallback TCPStateChangeCallback
 }
 
 // NewAnalyzer creates a new packet analyzer
@@ -55,6 +59,13 @@ func (a *Analyzer) ClearData() {
 	a.connectionStats = make(map[string]*models.TCPConnectionState)
 
 	log.Println("Analyzer数据已清空，准备处理新数据")
+}
+
+// SetTCPStateChangeCallback sets the callback function for TCP state changes
+func (a *Analyzer) SetTCPStateChangeCallback(callback TCPStateChangeCallback) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.stateChangeCallback = callback
 }
 
 // ProcessPacket processes a single packet and updates connection state
@@ -189,6 +200,11 @@ func (a *Analyzer) updateTCPConnectionState(conn *models.Connection, packet mode
 		conn.State = newState
 		a.recordStateTransition(conn.ID, oldState, newState, packet)
 		log.Printf("TCP状态转换: %s %s -> %s", conn.ID, oldState, newState)
+		
+		// 触发状态变化回调
+		if a.stateChangeCallback != nil {
+			go a.stateChangeCallback() // 异步调用避免阻塞
+		}
 	}
 
 	// 更新连接统计信息
