@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,6 +76,9 @@ func NewServer() *Server {
 
 	// 设置TCP状态变化回调
 	s.analyzer.SetTCPStateChangeCallback(s.broadcastTCPStateUpdate)
+	
+	// 设置性能数据更新回调
+	s.analyzer.SetPerformanceUpdateCallback(s.broadcastPerformanceUpdate)
 
 	// 启动后台任务
 	go s.startPacketProcessing()
@@ -116,6 +120,12 @@ func (s *Server) setupRoutes() {
 	// TCP状态可视化相关
 	s.mux.HandleFunc("/api/tcp/visualization", s.handleTCPVisualization)
 	s.mux.HandleFunc("/api/tcp/connection/", s.handleTCPConnectionState)
+
+	// 网络性能分析相关
+	s.mux.HandleFunc("/api/performance", s.handlePerformanceData)
+	s.mux.HandleFunc("/api/performance/connection/", s.handleConnectionPerformance)
+	s.mux.HandleFunc("/api/performance/export", s.handlePerformanceExport)
+	s.mux.HandleFunc("/api/performance/report", s.handlePerformanceReport)
 
 	// WebSocket相关
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
@@ -200,6 +210,67 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         
         @keyframes pulse { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
         @keyframes stateTransition { 0% { transform: scale(1); } 50% { transform: scale(1.3); } 100% { transform: scale(1); } }
+        
+        /* 性能分析样式 */
+        .performance-actions { margin-bottom: 20px; text-align: right; }
+        .performance-actions button { margin-left: 10px; }
+        .performance-overview { margin-bottom: 20px; }
+        .performance-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .metric-card { background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; position: relative; transition: all 0.3s ease; }
+        .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .metric-value { font-size: 28px; font-weight: bold; color: #007bff; margin-bottom: 5px; }
+        .metric-label { font-size: 14px; color: #666; margin-bottom: 8px; }
+        .metric-trend { font-size: 12px; font-weight: bold; position: absolute; top: 10px; right: 10px; padding: 2px 6px; border-radius: 4px; }
+        .metric-trend.positive { background: #d4edda; color: #155724; }
+        .metric-trend.negative { background: #f8d7da; color: #721c24; }
+        .metric-trend.neutral { background: #e2e3e5; color: #383d41; }
+        
+        .performance-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .chart-container { background: #f8f9fa; padding: 15px; border-radius: 8px; }
+        .chart-container h4 { margin: 0 0 10px 0; color: #333; font-size: 16px; }
+        .chart-container canvas { width: 100%; height: 150px; }
+        
+        .performance-alerts { margin-bottom: 20px; }
+        .alert-item { background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 5px 0; border-radius: 4px; border-left: 4px solid #f39c12; }
+        .alert-item.critical { background: #f8d7da; border-color: #f5c6cb; border-left-color: #dc3545; }
+        .alert-item.warning { background: #fff3cd; border-color: #ffeaa7; border-left-color: #f39c12; }
+        .alert-item.info { background: #d1ecf1; border-color: #bee5eb; border-left-color: #17a2b8; }
+        
+        .performance-table { overflow-x: auto; }
+        .performance-table table { width: 100%; border-collapse: collapse; }
+        .performance-table th, .performance-table td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .performance-table th { background: #f8f9fa; font-weight: bold; }
+        .performance-table tr:hover { background: #f8f9fa; }
+        
+        .grade-a { color: #28a745; font-weight: bold; }
+        .grade-b { color: #6f42c1; font-weight: bold; }
+        .grade-c { color: #fd7e14; font-weight: bold; }
+        .grade-d { color: #dc3545; font-weight: bold; }
+        .grade-f { color: #dc3545; font-weight: bold; background: #f8d7da; padding: 2px 4px; border-radius: 3px; }
+        
+        .status-good { color: #28a745; }
+        .status-warning { color: #fd7e14; }
+        .status-critical { color: #dc3545; }
+        
+        /* 性能报告样式 */
+        .report-metadata { background: #f8f9fa; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
+        .executive-summary { margin-bottom: 20px; }
+        .summary-grid, .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0; }
+        .summary-item, .metric-item { background: #e9ecef; padding: 8px; border-radius: 4px; }
+        .health-excellent { color: #28a745; font-weight: bold; }
+        .health-good { color: #17a2b8; font-weight: bold; }
+        .health-fair { color: #ffc107; font-weight: bold; }
+        .health-poor { color: #dc3545; font-weight: bold; }
+        .health-unknown { color: #6c757d; font-weight: bold; }
+        .top-issues, .recommendations, .quality-distribution { margin-bottom: 20px; }
+        .grade-breakdown { display: flex; flex-wrap: wrap; gap: 10px; }
+        .grade-item { padding: 8px 12px; border-radius: 20px; font-size: 12px; }
+        
+        @media (max-width: 768px) {
+            .performance-charts { grid-template-columns: 1fr; }
+            .performance-metrics { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+            .summary-grid, .metrics-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -303,6 +374,80 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
                 <h4>活跃TCP连接</h4>
                 <div id="tcp-connections">
                     <p>暂无活跃的TCP连接...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>📊 网络性能分析</h3>
+            <div class="performance-actions">
+                <button class="btn" onclick="exportPerformanceData('csv')">导出CSV</button>
+                <button class="btn btn-secondary" onclick="exportPerformanceData('json')">导出JSON</button>
+                <button class="btn btn-success" onclick="generatePerformanceReport()">生成报告</button>
+            </div>
+            <div class="performance-overview" id="performance-overview">
+                <div class="performance-metrics">
+                    <div class="metric-card">
+                        <div class="metric-value" id="avg-latency">0ms</div>
+                        <div class="metric-label">平均延迟</div>
+                        <div class="metric-trend" id="latency-trend">0%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="avg-throughput">0 Mbps</div>
+                        <div class="metric-label">平均吞吐量</div>
+                        <div class="metric-trend" id="throughput-trend">0%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="packet-loss">0%</div>
+                        <div class="metric-label">丢包率</div>
+                        <div class="metric-trend" id="packet-loss-trend">0%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="active-connections-perf">0</div>
+                        <div class="metric-label">活跃连接</div>
+                        <div class="metric-trend" id="connections-trend">0%</div>
+                    </div>
+                </div>
+                
+                <div class="performance-charts">
+                    <div class="chart-container">
+                        <h4>延迟趋势</h4>
+                        <canvas id="latency-chart" width="400" height="200"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h4>吞吐量趋势</h4>
+                        <canvas id="throughput-chart" width="400" height="200"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="performance-alerts" id="performance-alerts">
+                <h4>性能警告</h4>
+                <div id="alert-list">
+                    <p>暂无性能警告...</p>
+                </div>
+            </div>
+            
+            <div class="connection-performance" id="connection-performance">
+                <h4>连接性能排行</h4>
+                <div class="performance-table">
+                    <table id="performance-table">
+                        <thead>
+                            <tr>
+                                <th>连接</th>
+                                <th>延迟</th>
+                                <th>吞吐量</th>
+                                <th>丢包率</th>
+                                <th>质量评分</th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="performance-table-body">
+                            <tr>
+                                <td colspan="6">暂无性能数据...</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -561,6 +706,12 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         let wsConnected = false;
         let wsReconnectAttempts = 0;
         const wsMaxReconnectAttempts = 5;
+        
+        // 性能分析相关变量
+        let currentPerformanceData = null;
+        let latencyChart = null;
+        let throughputChart = null;
+        let lastPerformanceUpdate = null;
 
         // TCP状态信息配置
         const stateInfoMap = {
@@ -882,6 +1033,24 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
                 updateTCPConnections(newData.active_connections);
                 updateStateNodes(newData.state_statistics);
                 document.getElementById('transitions-count').textContent = newData.recent_transitions.length;
+            } else if (message.type === 'performance_update') {
+                // 实时更新性能分析数据
+                const performanceData = message.data;
+                
+                // 保存当前数据
+                currentPerformanceData = performanceData;
+                
+                // 更新性能指标卡片
+                updatePerformanceMetrics(performanceData.overall_metrics);
+                
+                // 更新性能图表
+                updatePerformanceCharts(performanceData.historical_data);
+                
+                // 更新性能警告
+                updatePerformanceAlerts(performanceData.alert_connections);
+                
+                // 更新连接性能表格
+                updatePerformanceTable(performanceData.top_connections);
             }
         }
         
@@ -911,6 +1080,363 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             }
         }
 
+        // 性能分析相关函数
+        async function updatePerformanceAnalysis() {
+            try {
+                const response = await fetch('/api/performance');
+                const data = await response.json();
+                
+                currentPerformanceData = data;
+                
+                // 更新性能指标卡片
+                updatePerformanceMetrics(data.overall_metrics);
+                
+                // 更新性能图表
+                updatePerformanceCharts(data.historical_data);
+                
+                // 更新性能警告
+                updatePerformanceAlerts(data.alert_connections);
+                
+                // 更新连接性能表格
+                updatePerformanceTable(data.top_connections);
+                
+            } catch (error) {
+                console.error('更新性能分析失败:', error);
+            }
+        }
+        
+        function updatePerformanceMetrics(overallMetrics) {
+            // 更新平均延迟
+            const avgLatency = overallMetrics.avg_latency_ms || 0;
+            document.getElementById('avg-latency').textContent = formatLatency(avgLatency);
+            
+            // 更新平均吞吐量
+            const avgThroughput = overallMetrics.avg_throughput_bps || 0;
+            document.getElementById('avg-throughput').textContent = formatThroughput(avgThroughput);
+            
+            // 更新丢包率
+            const packetLoss = overallMetrics.overall_packet_loss_rate || 0;
+            document.getElementById('packet-loss').textContent = packetLoss.toFixed(2) + '%';
+            
+            // 更新活跃连接数
+            const activeConnections = overallMetrics.active_connections || 0;
+            document.getElementById('active-connections-perf').textContent = activeConnections;
+            
+            // 计算趋势（如果有历史数据）
+            if (lastPerformanceUpdate) {
+                updateTrends(overallMetrics, lastPerformanceUpdate);
+            }
+            
+            lastPerformanceUpdate = overallMetrics;
+        }
+        
+        function updateTrends(current, previous) {
+            // 延迟趋势
+            const latencyTrend = calculateTrend(current.avg_latency_ms, previous.avg_latency_ms, true);
+            updateTrendIndicator('latency-trend', latencyTrend);
+            
+            // 吞吐量趋势
+            const throughputTrend = calculateTrend(current.avg_throughput_bps, previous.avg_throughput_bps);
+            updateTrendIndicator('throughput-trend', throughputTrend);
+            
+            // 丢包率趋势
+            const packetLossTrend = calculateTrend(current.overall_packet_loss_rate, previous.overall_packet_loss_rate, true);
+            updateTrendIndicator('packet-loss-trend', packetLossTrend);
+            
+            // 连接数趋势
+            const connectionsTrend = calculateTrend(current.active_connections, previous.active_connections);
+            updateTrendIndicator('connections-trend', connectionsTrend);
+        }
+        
+        function calculateTrend(current, previous, inverse = false) {
+            if (!previous || previous === 0) return 0;
+            
+            const change = ((current - previous) / previous) * 100;
+            return inverse ? -change : change; // 对于延迟和丢包率，降低是好的
+        }
+        
+        function updateTrendIndicator(elementId, trend) {
+            const element = document.getElementById(elementId);
+            const trendText = (trend > 0 ? '+' : '') + trend.toFixed(1) + '%';
+            
+            element.textContent = trendText;
+            element.className = 'metric-trend';
+            
+            if (trend > 5) {
+                element.classList.add('positive');
+            } else if (trend < -5) {
+                element.classList.add('negative');
+            } else {
+                element.classList.add('neutral');
+            }
+        }
+        
+        function updatePerformanceCharts(historicalData) {
+            if (!historicalData || historicalData.length === 0) return;
+            
+            // 获取最近60个数据点
+            const recentData = historicalData.slice(-60);
+            const labels = recentData.map(d => new Date(d.timestamp).toLocaleTimeString());
+            
+            // 更新延迟图表
+            updateLatencyChart(labels, recentData.map(d => d.avg_latency_ms || 0));
+            
+            // 更新吞吐量图表
+            updateThroughputChart(labels, recentData.map(d => (d.total_throughput_bps || 0) / 1000000)); // 转换为Mbps
+        }
+        
+        function updateLatencyChart(labels, data) {
+            const canvas = document.getElementById('latency-chart');
+            const ctx = canvas.getContext('2d');
+            
+            // 清除画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (data.length === 0) return;
+            
+            // 绘制简单的折线图
+            const maxValue = Math.max(...data) || 100;
+            const width = canvas.width;
+            const height = canvas.height;
+            const padding = 30;
+            
+            ctx.strokeStyle = '#007bff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            for (let i = 0; i < data.length; i++) {
+                const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
+                const y = height - padding - (data[i] / maxValue) * (height - 2 * padding);
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            
+            ctx.stroke();
+            
+            // 绘制坐标轴标签
+            ctx.fillStyle = '#666';
+            ctx.font = '10px Arial';
+            ctx.fillText('0ms', 5, height - 5);
+            ctx.fillText(maxValue.toFixed(0) + 'ms', 5, 15);
+        }
+        
+        function updateThroughputChart(labels, data) {
+            const canvas = document.getElementById('throughput-chart');
+            const ctx = canvas.getContext('2d');
+            
+            // 清除画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (data.length === 0) return;
+            
+            // 绘制简单的柱状图
+            const maxValue = Math.max(...data) || 10;
+            const width = canvas.width;
+            const height = canvas.height;
+            const padding = 30;
+            const barWidth = (width - 2 * padding) / data.length;
+            
+            ctx.fillStyle = '#28a745';
+            
+            for (let i = 0; i < data.length; i++) {
+                const barHeight = (data[i] / maxValue) * (height - 2 * padding);
+                const x = padding + i * barWidth;
+                const y = height - padding - barHeight;
+                
+                ctx.fillRect(x, y, barWidth - 1, barHeight);
+            }
+            
+            // 绘制坐标轴标签
+            ctx.fillStyle = '#666';
+            ctx.font = '10px Arial';
+            ctx.fillText('0 Mbps', 5, height - 5);
+            ctx.fillText(maxValue.toFixed(1) + ' Mbps', 5, 15);
+        }
+        
+        function updatePerformanceAlerts(alertConnections) {
+            const alertList = document.getElementById('alert-list');
+            
+            if (!alertConnections || alertConnections.length === 0) {
+                alertList.innerHTML = '<p>暂无性能警告...</p>';
+                return;
+            }
+            
+            let html = '';
+            alertConnections.forEach(conn => {
+                const alertLevel = conn.quality_metrics.alert_level;
+                const issues = conn.quality_metrics.issues_detected || [];
+                const connectionInfo = conn.connection_id;
+                
+                html += '<div class="alert-item ' + alertLevel + '">';
+                html += '<strong>' + connectionInfo + '</strong>';
+                html += '<div>评分: ' + (conn.quality_metrics.connection_score?.toFixed(1) || 'N/A') + '/100</div>';
+                if (issues.length > 0) {
+                    html += '<div>问题: ' + issues.join(', ') + '</div>';
+                }
+                html += '</div>';
+            });
+            
+            alertList.innerHTML = html;
+        }
+        
+        function updatePerformanceTable(topConnections) {
+            const tableBody = document.getElementById('performance-table-body');
+            
+            if (!topConnections || topConnections.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="6">暂无性能数据...</td></tr>';
+                return;
+            }
+            
+            let html = '';
+            topConnections.forEach(conn => {
+                const latency = conn.latency_metrics.avg_rtt_ms || 0;
+                const throughput = (conn.throughput_metrics.upstream_bps + conn.throughput_metrics.downstream_bps) || 0;
+                const packetLoss = conn.packet_loss_metrics.packet_loss_rate || 0;
+                const score = conn.quality_metrics.connection_score || 0;
+                const grade = conn.quality_metrics.performance_grade || 'N/A';
+                const alertLevel = conn.quality_metrics.alert_level || 'good';
+                
+                html += '<tr>';
+                html += '<td>' + conn.connection_id + '</td>';
+                html += '<td>' + formatLatency(latency) + '</td>';
+                html += '<td>' + formatThroughput(throughput) + '</td>';
+                html += '<td>' + packetLoss.toFixed(2) + '%</td>';
+                html += '<td><span class="grade-' + grade.toLowerCase() + '">' + grade + ' (' + score.toFixed(1) + ')</span></td>';
+                html += '<td><span class="status-' + alertLevel + '">' + alertLevel + '</span></td>';
+                html += '</tr>';
+            });
+            
+            tableBody.innerHTML = html;
+        }
+        
+        function formatLatency(ms) {
+            if (ms < 1) return (ms * 1000).toFixed(0) + 'μs';
+            if (ms < 1000) return ms.toFixed(1) + 'ms';
+            return (ms / 1000).toFixed(2) + 's';
+        }
+        
+        function formatThroughput(bps) {
+            if (bps < 1000) return bps.toFixed(0) + ' bps';
+            if (bps < 1000000) return (bps / 1000).toFixed(1) + ' Kbps';
+            if (bps < 1000000000) return (bps / 1000000).toFixed(1) + ' Mbps';
+            return (bps / 1000000000).toFixed(2) + ' Gbps';
+        }
+        
+        function startPerformanceUpdates() {
+            // 如果WebSocket连接正常，则不需要轮询
+            setInterval(function() {
+                if (!wsConnected) {
+                    // 只有在WebSocket未连接时才使用HTTP轮询
+                    updatePerformanceAnalysis();
+                }
+            }, 5000); // 每5秒更新一次性能数据
+        }
+        
+        // 导出性能数据
+        function exportPerformanceData(format) {
+            const url = '/api/performance/export?format=' + format;
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'performance_report.' + format;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        
+        // 生成性能报告
+        async function generatePerformanceReport() {
+            try {
+                const response = await fetch('/api/performance/report');
+                const report = await response.json();
+                
+                showPerformanceReport(report);
+                
+            } catch (error) {
+                console.error('生成性能报告失败:', error);
+                alert('生成性能报告失败: ' + error.message);
+            }
+        }
+        
+        // 显示性能报告模态框
+        function showPerformanceReport(report) {
+            const modal = document.getElementById('state-modal');
+            const modalBody = document.getElementById('modal-content-body');
+            
+            let modalContent = '<h2>📊 网络性能分析报告</h2>';
+            
+            // 报告元数据
+            modalContent += '<div class="report-metadata">';
+            modalContent += '<p><strong>生成时间:</strong> ' + new Date(report.report_metadata.generated_at).toLocaleString() + '</p>';
+            modalContent += '<p><strong>报告版本:</strong> ' + report.report_metadata.report_version + '</p>';
+            modalContent += '</div>';
+            
+            // 执行摘要
+            modalContent += '<div class="executive-summary">';
+            modalContent += '<h3>📋 执行摘要</h3>';
+            modalContent += '<div class="summary-grid">';
+            modalContent += '<div class="summary-item"><strong>总连接数:</strong> ' + report.executive_summary.total_connections + '</div>';
+            modalContent += '<div class="summary-item"><strong>问题连接:</strong> ' + report.executive_summary.problematic_connections + '</div>';
+            modalContent += '<div class="summary-item"><strong>平均质量评分:</strong> ' + (report.executive_summary.average_quality_score || 0).toFixed(1) + '/100</div>';
+            modalContent += '<div class="summary-item"><strong>性能趋势:</strong> ' + report.executive_summary.performance_trend + '</div>';
+            modalContent += '<div class="summary-item"><strong>整体健康度:</strong> <span class="health-' + report.executive_summary.overall_health + '">' + report.executive_summary.overall_health + '</span></div>';
+            modalContent += '</div>';
+            modalContent += '</div>';
+            
+            // 关键指标
+            modalContent += '<div class="key-metrics">';
+            modalContent += '<h3>📈 关键指标</h3>';
+            modalContent += '<div class="metrics-grid">';
+            modalContent += '<div class="metric-item"><strong>平均延迟:</strong> ' + formatLatency(report.key_metrics.average_latency_ms) + '</div>';
+            modalContent += '<div class="metric-item"><strong>平均吞吐量:</strong> ' + formatThroughput(report.key_metrics.average_throughput_bps) + '</div>';
+            modalContent += '<div class="metric-item"><strong>丢包率:</strong> ' + (report.key_metrics.packet_loss_rate || 0).toFixed(2) + '%</div>';
+            modalContent += '<div class="metric-item"><strong>活跃连接:</strong> ' + report.key_metrics.active_connections + '</div>';
+            modalContent += '</div>';
+            modalContent += '</div>';
+            
+            // 主要问题
+            if (report.top_issues && report.top_issues.length > 0) {
+                modalContent += '<div class="top-issues">';
+                modalContent += '<h3>⚠️ 主要问题</h3>';
+                modalContent += '<ul>';
+                report.top_issues.forEach(issue => {
+                    modalContent += '<li><strong>' + issue.issue + '</strong> (' + issue.count + '个连接)</li>';
+                });
+                modalContent += '</ul>';
+                modalContent += '</div>';
+            }
+            
+            // 建议
+            if (report.recommendations && report.recommendations.length > 0) {
+                modalContent += '<div class="recommendations">';
+                modalContent += '<h3>💡 优化建议</h3>';
+                modalContent += '<ul>';
+                report.recommendations.forEach(rec => {
+                    modalContent += '<li>' + rec + '</li>';
+                });
+                modalContent += '</ul>';
+                modalContent += '</div>';
+            }
+            
+            // 质量分布
+            if (report.quality_distribution && Object.keys(report.quality_distribution).length > 0) {
+                modalContent += '<div class="quality-distribution">';
+                modalContent += '<h3>📊 质量分布</h3>';
+                modalContent += '<div class="grade-breakdown">';
+                Object.entries(report.quality_distribution).forEach(([grade, count]) => {
+                    modalContent += '<div class="grade-item grade-' + grade.toLowerCase() + '">' + grade + ': ' + count + '个连接</div>';
+                });
+                modalContent += '</div>';
+                modalContent += '</div>';
+            }
+            
+            modalBody.innerHTML = modalContent;
+            modal.style.display = 'block';
+        }
+
         // 页面加载时初始化
         window.onload = function() {
             loadPCAPList();
@@ -918,6 +1444,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             updateTCPVisualization();
             // 初始化交互功能
             initializeInteractions();
+            // 初始化性能分析
+            updatePerformanceAnalysis();
+            startPerformanceUpdates();
             // 建立WebSocket连接
             connectWebSocket();
         };
@@ -1628,6 +2157,27 @@ func (s *Server) broadcastTCPStateUpdate() {
 	}
 }
 
+// 广播性能分析更新到所有客户端
+func (s *Server) broadcastPerformanceUpdate() {
+	data := s.analyzer.GetPerformanceData()
+	message := WSMessage{
+		Type: "performance_update",
+		Data: data,
+	}
+	
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("序列化性能分析广播消息失败: %v", err)
+		return
+	}
+	
+	select {
+	case s.broadcast <- messageBytes:
+	default:
+		log.Println("性能分析广播通道已满，跳过本次更新")
+	}
+}
+
 // 获取WebSocket连接状态
 func (s *Server) getWebSocketStatus() map[string]interface{} {
 	s.clientMutex.RLock()
@@ -1655,4 +2205,290 @@ func (s *Server) handleWSStatus(w http.ResponseWriter, r *http.Request) {
 	status := s.getWebSocketStatus()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+// handlePerformanceData returns network performance analysis data
+func (s *Server) handlePerformanceData(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	data := s.analyzer.GetPerformanceData()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+// handleConnectionPerformance returns performance metrics for a specific connection
+func (s *Server) handleConnectionPerformance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// 从URL路径中提取connection ID
+	path := r.URL.Path
+	if !strings.HasPrefix(path, "/api/performance/connection/") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	
+	connectionID := strings.TrimPrefix(path, "/api/performance/connection/")
+	if connectionID == "" {
+		http.Error(w, "Connection ID required", http.StatusBadRequest)
+		return
+	}
+	
+	metrics, exists := s.analyzer.GetConnectionPerformanceMetrics(connectionID)
+	if !exists {
+		http.Error(w, "Connection not found", http.StatusNotFound)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
+}
+
+// handlePerformanceExport exports performance data in various formats
+func (s *Server) handlePerformanceExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "csv"
+	}
+	
+	data := s.analyzer.GetPerformanceData()
+	
+	switch format {
+	case "csv":
+		s.exportPerformanceCSV(w, data)
+	case "json":
+		s.exportPerformanceJSON(w, data)
+	default:
+		http.Error(w, "Unsupported format", http.StatusBadRequest)
+	}
+}
+
+func (s *Server) exportPerformanceCSV(w http.ResponseWriter, data models.NetworkPerformanceData) {
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=performance_report.csv")
+	
+	// CSV Header
+	csvData := "Connection ID,Average Latency (ms),Throughput (bps),Packet Loss (%),Quality Score,Grade,Alert Level,Issues\n"
+	
+	// Add connection data
+	for _, conn := range data.ConnectionMetrics {
+		latency := conn.LatencyMetrics.AvgRTT
+		throughput := conn.ThroughputMetrics.UpstreamBps + conn.ThroughputMetrics.DownstreamBps
+		packetLoss := conn.PacketLossMetrics.PacketLossRate
+		score := conn.QualityMetrics.ConnectionScore
+		grade := conn.QualityMetrics.PerformanceGrade
+		alertLevel := conn.QualityMetrics.AlertLevel
+		issues := strings.Join(conn.QualityMetrics.IssuesDetected, "; ")
+		
+		csvData += fmt.Sprintf("%s,%.2f,%.0f,%.2f,%.1f,%s,%s,\"%s\"\n",
+			conn.ConnectionID, latency, throughput, packetLoss, score, grade, alertLevel, issues)
+	}
+	
+	w.Write([]byte(csvData))
+}
+
+func (s *Server) exportPerformanceJSON(w http.ResponseWriter, data models.NetworkPerformanceData) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=performance_report.json")
+	
+	json.NewEncoder(w).Encode(data)
+}
+
+// handlePerformanceReport generates a comprehensive performance report
+func (s *Server) handlePerformanceReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	data := s.analyzer.GetPerformanceData()
+	report := s.generatePerformanceReport(data)
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
+}
+
+func (s *Server) generatePerformanceReport(data models.NetworkPerformanceData) map[string]interface{} {
+	now := time.Now()
+	
+	// 计算汇总统计
+	totalConnections := len(data.ConnectionMetrics)
+	problematicConnections := len(data.AlertConnections)
+	
+	// 计算质量分布
+	gradeDistribution := make(map[string]int)
+	avgScore := 0.0
+	for _, conn := range data.ConnectionMetrics {
+		grade := conn.QualityMetrics.PerformanceGrade
+		gradeDistribution[grade]++
+		avgScore += conn.QualityMetrics.ConnectionScore
+	}
+	if totalConnections > 0 {
+		avgScore /= float64(totalConnections)
+	}
+	
+	// 计算性能趋势
+	var performanceTrend string
+	if len(data.HistoricalData) >= 2 {
+		recent := data.HistoricalData[len(data.HistoricalData)-1]
+		previous := data.HistoricalData[len(data.HistoricalData)-2]
+		
+		if recent.AvgLatency < previous.AvgLatency && recent.PacketLossRate < previous.PacketLossRate {
+			performanceTrend = "improving"
+		} else if recent.AvgLatency > previous.AvgLatency || recent.PacketLossRate > previous.PacketLossRate {
+			performanceTrend = "degrading"
+		} else {
+			performanceTrend = "stable"
+		}
+	} else {
+		performanceTrend = "insufficient_data"
+	}
+	
+	// 生成建议
+	recommendations := s.generateRecommendations(data)
+	
+	report := map[string]interface{}{
+		"report_metadata": map[string]interface{}{
+			"generated_at":     now,
+			"report_version":   "1.0",
+			"analysis_period": "realtime",
+		},
+		"executive_summary": map[string]interface{}{
+			"total_connections":        totalConnections,
+			"problematic_connections":  problematicConnections,
+			"average_quality_score":    avgScore,
+			"performance_trend":        performanceTrend,
+			"overall_health":           s.calculateOverallHealth(avgScore, float64(problematicConnections), float64(totalConnections)),
+		},
+		"quality_distribution": gradeDistribution,
+		"key_metrics": map[string]interface{}{
+			"average_latency_ms":     data.OverallMetrics.AvgLatency,
+			"average_throughput_bps": data.OverallMetrics.AvgThroughput,
+			"packet_loss_rate":       data.OverallMetrics.OverallPacketLoss,
+			"active_connections":     data.OverallMetrics.ActiveConnections,
+		},
+		"top_issues": s.getTopIssues(data.AlertConnections),
+		"recommendations": recommendations,
+		"detailed_analysis": map[string]interface{}{
+			"connection_count":     totalConnections,
+			"alert_connections":    data.AlertConnections,
+			"protocol_breakdown":   data.OverallMetrics.TopProtocols,
+			"historical_trend":     data.HistoricalData[max(0, len(data.HistoricalData)-20):], // Last 20 data points
+		},
+	}
+	
+	return report
+}
+
+func (s *Server) calculateOverallHealth(avgScore, problematicConnections, totalConnections float64) string {
+	if totalConnections == 0 {
+		return "unknown"
+	}
+	
+	problemRatio := problematicConnections / totalConnections
+	
+	if avgScore >= 80 && problemRatio < 0.1 {
+		return "excellent"
+	} else if avgScore >= 70 && problemRatio < 0.2 {
+		return "good"
+	} else if avgScore >= 60 && problemRatio < 0.3 {
+		return "fair"
+	} else {
+		return "poor"
+	}
+}
+
+func (s *Server) getTopIssues(alertConnections []models.PerformanceMetrics) []map[string]interface{} {
+	issueCount := make(map[string]int)
+	
+	for _, conn := range alertConnections {
+		for _, issue := range conn.QualityMetrics.IssuesDetected {
+			issueCount[issue]++
+		}
+	}
+	
+	// Convert to sorted list
+	type issueInfo struct {
+		Issue string `json:"issue"`
+		Count int    `json:"count"`
+	}
+	
+	var issues []issueInfo
+	for issue, count := range issueCount {
+		issues = append(issues, issueInfo{Issue: issue, Count: count})
+	}
+	
+	// Sort by count (descending)
+	sort.Slice(issues, func(i, j int) bool {
+		return issues[i].Count > issues[j].Count
+	})
+	
+	// Return top 5 issues
+	result := make([]map[string]interface{}, 0)
+	for i := 0; i < min(5, len(issues)); i++ {
+		result = append(result, map[string]interface{}{
+			"issue": issues[i].Issue,
+			"count": issues[i].Count,
+		})
+	}
+	
+	return result
+}
+
+func (s *Server) generateRecommendations(data models.NetworkPerformanceData) []string {
+	var recommendations []string
+	
+	// 延迟相关建议
+	if data.OverallMetrics.AvgLatency > 200 {
+		recommendations = append(recommendations, "网络延迟较高，建议检查网络路由和带宽利用率")
+	}
+	
+	// 丢包相关建议
+	if data.OverallMetrics.OverallPacketLoss > 1 {
+		recommendations = append(recommendations, "检测到数据包丢失，建议检查网络设备和链路质量")
+	}
+	
+	// 连接质量相关建议
+	problemCount := len(data.AlertConnections)
+	totalCount := len(data.ConnectionMetrics)
+	if totalCount > 0 && float64(problemCount)/float64(totalCount) > 0.2 {
+		recommendations = append(recommendations, "超过20%的连接存在性能问题，建议进行网络优化")
+	}
+	
+	// 协议相关建议
+	for protocol, stats := range data.OverallMetrics.TopProtocols {
+		if stats.PacketLoss > 5 {
+			recommendations = append(recommendations, fmt.Sprintf("%s协议的丢包率较高(%.1f%%)，建议检查该协议的配置", protocol, stats.PacketLoss))
+		}
+	}
+	
+	if len(recommendations) == 0 {
+		recommendations = append(recommendations, "网络性能表现良好，建议继续监控关键指标")
+	}
+	
+	return recommendations
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -24,6 +24,7 @@ type Analyzer struct {
 	connectionStats     map[string]*models.TCPConnectionState
 	maxTransitions      int
 	stateChangeCallback TCPStateChangeCallback
+	performanceAnalyzer *PerformanceAnalyzer
 }
 
 // NewAnalyzer creates a new packet analyzer
@@ -31,13 +32,14 @@ func NewAnalyzer() *Analyzer {
 	maxPackets := 1000
 	maxTransitions := 500
 	return &Analyzer{
-		connections:      make(map[string]*models.Connection),
-		recentPackets:    make([]models.Packet, 0, maxPackets),
-		maxPackets:       maxPackets,
-		packetBuffer:     make([]models.Packet, maxPackets),
-		stateTransitions: make([]models.TCPStateTransition, 0, maxTransitions),
-		connectionStats:  make(map[string]*models.TCPConnectionState),
-		maxTransitions:   maxTransitions,
+		connections:         make(map[string]*models.Connection),
+		recentPackets:       make([]models.Packet, 0, maxPackets),
+		maxPackets:          maxPackets,
+		packetBuffer:        make([]models.Packet, maxPackets),
+		stateTransitions:    make([]models.TCPStateTransition, 0, maxTransitions),
+		connectionStats:     make(map[string]*models.TCPConnectionState),
+		maxTransitions:      maxTransitions,
+		performanceAnalyzer: NewPerformanceAnalyzer(),
 	}
 }
 
@@ -57,6 +59,9 @@ func (a *Analyzer) ClearData() {
 	// 清空状态转换数据
 	a.stateTransitions = make([]models.TCPStateTransition, 0, a.maxTransitions)
 	a.connectionStats = make(map[string]*models.TCPConnectionState)
+
+	// 清空性能分析数据
+	a.performanceAnalyzer.ClearData()
 
 	log.Println("Analyzer数据已清空，准备处理新数据")
 }
@@ -85,8 +90,14 @@ func (a *Analyzer) ProcessPacket(packet models.Packet) {
 	a.recentPackets = append(a.recentPackets, packet)
 
 	// 处理连接
+	var connID string
 	if packet.Protocol == "TCP" || packet.Protocol == "UDP" {
-		a.processConnection(packet)
+		connID = a.processConnection(packet)
+		
+		// 进行性能分析
+		if connID != "" {
+			a.performanceAnalyzer.ProcessPacket(packet, connID)
+		}
 	}
 
 	// 调试日志
@@ -96,7 +107,7 @@ func (a *Analyzer) ProcessPacket(packet models.Packet) {
 }
 
 // processConnection 处理连接相关逻辑
-func (a *Analyzer) processConnection(packet models.Packet) {
+func (a *Analyzer) processConnection(packet models.Packet) string {
 	connID := a.generateConnectionID(packet)
 
 	conn, exists := a.connections[connID]
@@ -126,6 +137,8 @@ func (a *Analyzer) processConnection(packet models.Packet) {
 	if packet.Protocol == "TCP" {
 		a.updateTCPConnectionState(conn, packet)
 	}
+	
+	return connID
 }
 
 // determineTCPState 根据TCP标志位确定连接状态
@@ -493,4 +506,19 @@ func (a *Analyzer) GetTCPConnectionState(connectionID string) (*models.TCPConnec
 	// 返回副本
 	result := *connStat
 	return &result, nil
+}
+
+// GetPerformanceData 获取网络性能分析数据
+func (a *Analyzer) GetPerformanceData() models.NetworkPerformanceData {
+	return a.performanceAnalyzer.GetPerformanceData()
+}
+
+// GetConnectionPerformanceMetrics 获取特定连接的性能指标
+func (a *Analyzer) GetConnectionPerformanceMetrics(connectionID string) (*models.PerformanceMetrics, bool) {
+	return a.performanceAnalyzer.GetConnectionMetrics(connectionID)
+}
+
+// SetPerformanceUpdateCallback 设置性能数据更新回调
+func (a *Analyzer) SetPerformanceUpdateCallback(callback func()) {
+	a.performanceAnalyzer.SetUpdateCallback(callback)
 }

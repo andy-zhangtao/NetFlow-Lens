@@ -1,0 +1,23 @@
+========================================
+NetFlow Lens 项目报告
+生成时间: 2025年 7月24日 星期四 17时49分09秒 CST
+========================================
+
+NetFlow Lens 项目状态:
+  项目名称: netflow-lens
+  构建目录: ./build
+  二进制文件: ./build/netflow-lens
+  Go 版本: go version go1.24.0 darwin/arm64
+  构建状态: 已构建
+  文件大小: 9.8M
+  本地构建: 存在
+
+NetFlow Lens 代码统计:
+  Go 文件数: 13
+  总行数: 7026
+  测试文件数: 6
+  包数量: 7
+
+Git 信息:
+  当前分支: feature/basic-framework
+  最近提交: c5d09f6 实现TCP状态图可视化功能 - 网络学习工具重大升级
