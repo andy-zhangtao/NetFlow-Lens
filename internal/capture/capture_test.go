@@ -1,9 +1,12 @@
 package capture
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
+	
+	"github.com/andy-zhangtao/NetFlow-Lens/pkg/models"
 )
 
 func TestNewCapturer(t *testing.T) {
@@ -388,3 +391,285 @@ func BenchmarkGetPacketCount(b *testing.B) {
 		_ = capturer.GetPacketCount()
 	}
 }
+
+// Filter integration tests
+func TestNewCapturerWithFilterManager(t *testing.T) {
+	capturer := NewCapturer()
+	
+	if capturer.filterManager == nil {
+		t.Error("Expected filter manager to be initialized")
+	}
+	
+	// Test that filter manager has default state
+	expression := capturer.filterManager.GetActiveFilterExpression()
+	if expression != "" {
+		t.Errorf("Expected empty active filter expression initially, got '%s'", expression)
+	}
+	
+	presets := capturer.filterManager.GetPresetFilters()
+	if len(presets) == 0 {
+		t.Error("Expected preset filters to be loaded")
+	}
+}
+
+func TestGetFilterManager(t *testing.T) {
+	capturer := NewCapturer()
+	
+	fm := capturer.GetFilterManager()
+	if fm == nil {
+		t.Error("Expected GetFilterManager to return non-nil filter manager")
+	}
+	
+	// Verify it's the same instance
+	if fm != capturer.filterManager {
+		t.Error("Expected GetFilterManager to return the same instance")
+	}
+}
+
+func TestGetFilterStats(t *testing.T) {
+	capturer := NewCapturer()
+	
+	stats := capturer.GetFilterStats()
+	if stats == nil {
+		t.Error("Expected GetFilterStats to return non-nil stats")
+	}
+	
+	// Initially should be zero
+	if stats.TotalPackets != 0 {
+		t.Errorf("Expected initial TotalPackets=0, got %d", stats.TotalPackets)
+	}
+	if stats.FilteredPackets != 0 {
+		t.Errorf("Expected initial FilteredPackets=0, got %d", stats.FilteredPackets)
+	}
+	if stats.DroppedPackets != 0 {
+		t.Errorf("Expected initial DroppedPackets=0, got %d", stats.DroppedPackets)
+	}
+	if stats.FilterRatio != 0.0 {
+		t.Errorf("Expected initial FilterRatio=0.0, got %f", stats.FilterRatio)
+	}
+}
+
+func TestFilterManagerIntegration(t *testing.T) {
+	capturer := NewCapturer()
+	fm := capturer.GetFilterManager()
+	
+	// Test adding a filter
+	rule := &models.FilterRule{
+		Name:        "Test HTTP Filter",
+		Expression:  "tcp port 80",
+		Description: "Test filter for HTTP traffic",
+		IsActive:    true,
+	}
+	
+	err := fm.AddFilter(rule)
+	if err != nil {
+		t.Fatalf("Failed to add filter: %v", err)
+	}
+	
+	// Test setting active filter
+	err = fm.SetActiveFilter(rule.ID)
+	if err != nil {
+		t.Fatalf("Failed to set active filter: %v", err)
+	}
+	
+	// Verify active filter expression
+	expression := fm.GetActiveFilterExpression()
+	if expression != "tcp port 80" {
+		t.Errorf("Expected active filter expression 'tcp port 80', got '%s'", expression)
+	}
+	
+	// Test clearing active filter
+	err = fm.SetActiveFilter("")
+	if err != nil {
+		t.Fatalf("Failed to clear active filter: %v", err)
+	}
+	
+	expression = fm.GetActiveFilterExpression()
+	if expression != "" {
+		t.Errorf("Expected empty expression after clearing, got '%s'", expression)
+	}
+}
+
+func TestResetStats(t *testing.T) {
+	capturer := NewCapturer()
+	
+	// Set some initial packet count
+	capturer.packetCount = 100
+	capturer.filteredCount = 80
+	capturer.droppedCount = 5
+	
+	// Call resetStats (it's a private method, so we need to test indirectly)
+	capturer.resetStats()
+	
+	// Verify stats are reset
+	if capturer.packetCount != 0 {
+		t.Errorf("Expected packetCount=0 after reset, got %d", capturer.packetCount)
+	}
+	if capturer.filteredCount != 0 {
+		t.Errorf("Expected filteredCount=0 after reset, got %d", capturer.filteredCount)
+	}
+	if capturer.droppedCount != 0 {
+		t.Errorf("Expected droppedCount=0 after reset, got %d", capturer.droppedCount)
+	}
+}
+
+func TestUpdateFilterStats(t *testing.T) {
+	capturer := NewCapturer()
+	
+	// Set some packet counts
+	capturer.packetCount = 100
+	capturer.filteredCount = 80
+	capturer.droppedCount = 5
+	
+	// Update filter stats
+	capturer.updateFilterStats()
+	
+	// Get stats from filter manager
+	stats := capturer.GetFilterStats()
+	
+	// Verify stats were updated - updateFilterStats uses packetCount as totalPackets
+	if stats.TotalPackets != 100 { // packetCount is used as total
+		t.Errorf("Expected TotalPackets=100, got %d", stats.TotalPackets)
+	}
+	if stats.FilteredPackets != 80 {
+		t.Errorf("Expected FilteredPackets=80, got %d", stats.FilteredPackets)
+	}
+	if stats.DroppedPackets != 5 {
+		t.Errorf("Expected DroppedPackets=5, got %d", stats.DroppedPackets)
+	}
+}
+
+func TestFilterValidationIntegration(t *testing.T) {
+	capturer := NewCapturer()
+	fm := capturer.GetFilterManager()
+	
+	tests := []struct {
+		name        string
+		expression  string
+		expectValid bool
+	}{
+		{
+			name:        "valid tcp port filter",
+			expression:  "tcp port 80",
+			expectValid: true,
+		},
+		{
+			name:        "valid udp port filter", 
+			expression:  "udp port 53",
+			expectValid: true,
+		},
+		{
+			name:        "valid complex filter",
+			expression:  "tcp port 80 or tcp port 443",
+			expectValid: true,
+		},
+		{
+			name:        "invalid syntax",
+			expression:  "invalid syntax here",
+			expectValid: false,
+		},
+		{
+			name:        "empty expression",
+			expression:  "",
+			expectValid: false,
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := fm.ValidateFilter(tt.expression)
+			
+			if result.IsValid != tt.expectValid {
+				t.Errorf("ValidateFilter(%q).IsValid = %v, want %v", 
+					tt.expression, result.IsValid, tt.expectValid)
+			}
+			
+			if !tt.expectValid && result.ErrorMessage == "" {
+				t.Error("Expected error message for invalid filter")
+			}
+		})
+	}
+}
+
+func TestPresetFiltersIntegration(t *testing.T) {
+	capturer := NewCapturer()
+	fm := capturer.GetFilterManager()
+	
+	presets := fm.GetPresetFilters()
+	if len(presets) == 0 {
+		t.Error("Expected preset filters to be available")
+	}
+	
+	// Test that all presets have valid expressions
+	for _, preset := range presets {
+		if preset.ID == "" {
+			t.Error("Preset filter missing ID")
+		}
+		if preset.Name == "" {
+			t.Error("Preset filter missing name")
+		}
+		if preset.Expression == "" {
+			t.Error("Preset filter missing expression")
+		}
+		if preset.Category == "" {
+			t.Error("Preset filter missing category")
+		}
+		
+		// Validate the preset expression
+		result := fm.ValidateFilter(preset.Expression)
+		if !result.IsValid {
+			t.Errorf("Preset filter %s has invalid expression: %s", preset.ID, result.ErrorMessage)
+		}
+	}
+}
+
+func TestFilterManagerConcurrentAccess(t *testing.T) {
+	capturer := NewCapturer()
+	fm := capturer.GetFilterManager()
+	
+	done := make(chan bool)
+	numGoroutines := 5
+	
+	// Test concurrent access to filter manager methods
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer func() { done <- true }()
+			
+			// Create a filter
+			rule := &models.FilterRule{
+				Name:        fmt.Sprintf("Concurrent Filter %d", id),
+				Expression:  "tcp port 80",
+				Description: "Concurrent test filter",
+				IsActive:    true,
+			}
+			
+			err := fm.AddFilter(rule)
+			if err != nil {
+				t.Errorf("Failed to add filter in goroutine %d: %v", id, err)
+				return
+			}
+			
+			// Read operations
+			_ = fm.ListFilters()
+			_ = fm.GetPresetFilters()
+			_ = fm.GetStats()
+			_ = fm.GetActiveFilterExpression()
+		}(i)
+	}
+	
+	// Wait for all goroutines to complete
+	for i := 0; i < numGoroutines; i++ {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Timeout waiting for concurrent filter access test")
+		}
+	}
+	
+	// Verify all filters were added
+	filters := fm.ListFilters()
+	if len(filters) != numGoroutines {
+		t.Errorf("Expected %d filters, got %d", numGoroutines, len(filters))
+	}
+}
+

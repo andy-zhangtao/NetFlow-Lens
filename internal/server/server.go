@@ -72,6 +72,17 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/pcap/load", s.handlePCAPLoad)
 	s.mux.HandleFunc("/api/pcap/info", s.handlePCAPInfo)
 
+	// BPF过滤器相关
+	s.mux.HandleFunc("/api/filters", s.handleFilters)
+	s.mux.HandleFunc("/api/filters/validate", s.handleValidateFilter)
+	s.mux.HandleFunc("/api/filters/presets", s.handleFilterPresets)
+	s.mux.HandleFunc("/api/filters/active", s.handleActiveFilter)
+	s.mux.HandleFunc("/api/filters/stats", s.handleFilterStats)
+
+	// TCP状态可视化相关
+	s.mux.HandleFunc("/api/tcp/visualization", s.handleTCPVisualization)
+	s.mux.HandleFunc("/api/tcp/connection/", s.handleTCPConnectionState)
+
 	// 静态文件服务
 	s.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
 }
@@ -102,6 +113,33 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         .upload-area:hover { border-color: #007bff; background: #f8f9fa; }
         input[type="file"] { display: none; }
         .file-info { background: #f8f9fa; padding: 15px; border-radius: 6px; margin: 10px 0; }
+
+        /* TCP状态可视化样式 */
+        .tcp-visualization { position: relative; width: 100%; height: 400px; border: 1px solid #ddd; border-radius: 8px; background: #fff; overflow: hidden; }
+        .state-node { cursor: pointer; transition: all 0.3s ease; opacity: 0.3; }
+        .state-node:hover { opacity: 1 !important; }
+        .state-arrow { stroke: #666; stroke-width: 2; fill: none; }
+        .state-label { font-size: 10px; font-weight: bold; text-anchor: middle; fill: #333; }
+        
+        /* TCP状态颜色 */
+        .state-closed { background: #6c757d; }
+        .state-syn-sent { background: #ffc107; }
+        .state-syn-received { background: #fd7e14; }
+        .state-established { background: #28a745; }
+        .state-fin-wait { background: #dc3545; }
+        .state-reset { background: #e83e8c; }
+        .state-active { background: #17a2b8; }
+        .state-unknown { background: #6c757d; }
+
+        .tcp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-top: 20px; }
+        .stat-item { text-align: center; padding: 10px; background: #f8f9fa; border-radius: 6px; }
+        .stat-number { font-size: 24px; font-weight: bold; color: #007bff; }
+        .stat-label { font-size: 12px; color: #666; }
+
+        .connection-list { max-height: 300px; overflow-y: auto; }
+        .connection-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .connection-info { flex: 1; }
+        .connection-state { padding: 4px 8px; border-radius: 4px; font-size: 11px; color: white; }
     </style>
 </head>
 <body>
@@ -138,6 +176,76 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>
         
+        <div class="card">
+            <h3>🔗 TCP状态可视化</h3>
+            <div class="tcp-visualization" id="tcp-state-diagram">
+                <svg width="100%" height="100%" id="tcp-state-svg">
+                    <!-- TCP状态节点 -->
+                    <g id="state-nodes">
+                        <circle cx="100" cy="60" r="30" class="state-node state-closed" id="closed-state"/>
+                        <text x="100" y="66" class="state-label">CLOSED</text>
+                        
+                        <circle cx="250" cy="60" r="30" class="state-node state-syn-sent" id="syn-sent-state"/>
+                        <text x="250" y="66" class="state-label">SYN_SENT</text>
+                        
+                        <circle cx="400" cy="60" r="30" class="state-node state-syn-received" id="syn-received-state"/>
+                        <text x="400" y="66" class="state-label">SYN_RECV</text>
+                        
+                        <circle cx="550" cy="60" r="30" class="state-node state-established" id="established-state"/>
+                        <text x="550" y="66" class="state-label">ESTAB</text>
+                        
+                        <circle cx="400" cy="200" r="30" class="state-node state-fin-wait" id="fin-wait-state"/>
+                        <text x="400" y="206" class="state-label">FIN_WAIT</text>
+                        
+                        <circle cx="250" cy="200" r="30" class="state-node state-reset" id="reset-state"/>
+                        <text x="250" y="206" class="state-label">RESET</text>
+                    </g>
+                    
+                    <!-- 状态转换箭头 -->
+                    <g id="state-arrows">
+                        <path d="M 130 60 Q 190 40 220 60" class="state-arrow" marker-end="url(#arrowhead)"/>
+                        <path d="M 280 60 Q 340 40 370 60" class="state-arrow" marker-end="url(#arrowhead)"/>
+                        <path d="M 430 60 Q 490 40 520 60" class="state-arrow" marker-end="url(#arrowhead)"/>
+                        <path d="M 550 90 Q 550 150 430 200" class="state-arrow" marker-end="url(#arrowhead)"/>
+                        <path d="M 370 200 Q 310 180 280 200" class="state-arrow" marker-end="url(#arrowhead)"/>
+                    </g>
+                    
+                    <!-- 箭头标记定义 -->
+                    <defs>
+                        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+                        </marker>
+                    </defs>
+                </svg>
+            </div>
+            
+            <div class="tcp-stats" id="tcp-stats">
+                <div class="stat-item">
+                    <div class="stat-number" id="active-connections">0</div>
+                    <div class="stat-label">活跃连接</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="established-count">0</div>
+                    <div class="stat-label">已建立</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="syn-sent-count">0</div>
+                    <div class="stat-label">SYN发送</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-number" id="transitions-count">0</div>
+                    <div class="stat-label">状态转换</div>
+                </div>
+            </div>
+            
+            <div class="connection-list" id="connection-list">
+                <h4>活跃TCP连接</h4>
+                <div id="tcp-connections">
+                    <p>暂无活跃的TCP连接...</p>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <h3>📈 数据包列表</h3>
             <div id="packet-list">
@@ -227,6 +335,109 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             }
         }
 
+
+        // TCP状态可视化相关函数
+        async function updateTCPVisualization() {
+            try {
+                const response = await fetch('/api/tcp/visualization');
+                const data = await response.json();
+                
+                // 更新状态统计
+                updateTCPStats(data.state_statistics);
+                
+                // 更新活跃连接列表
+                updateTCPConnections(data.active_connections);
+                
+                // 更新状态节点的活跃状态
+                updateStateNodes(data.state_statistics);
+                
+                // 更新转换计数
+                document.getElementById('transitions-count').textContent = data.recent_transitions.length;
+                
+            } catch (error) {
+                console.error('更新TCP状态可视化失败:', error);
+            }
+        }
+        
+        function updateTCPStats(stateStats) {
+            const totalActive = Object.values(stateStats).reduce((sum, count) => sum + count, 0);
+            document.getElementById('active-connections').textContent = totalActive;
+            document.getElementById('established-count').textContent = stateStats['ESTABLISHED'] || 0;
+            document.getElementById('syn-sent-count').textContent = stateStats['SYN_SENT'] || 0;
+        }
+        
+        function updateTCPConnections(connections) {
+            const container = document.getElementById('tcp-connections');
+            
+            if (connections.length === 0) {
+                container.innerHTML = '<p>暂无活跃的TCP连接...</p>';
+                return;
+            }
+            
+            let html = '';
+            connections.forEach(conn => {
+                const stateClass = getStateClass(conn.current_state);
+                html += '<div class="connection-item">' +
+                    '<div class="connection-info">' +
+                    '<strong>' + conn.connection.source_ip + ':' + conn.connection.source_port + ' → ' + conn.connection.dest_ip + ':' + conn.connection.dest_port + '</strong><br>' +
+                    '<small>持续时间: ' + Math.round(conn.duration) + 's | 数据包: ' + conn.packet_count + '</small>' +
+                    '</div>' +
+                    '<div class="connection-state ' + stateClass + '">' + conn.current_state + '</div>' +
+                    '</div>';
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function updateStateNodes(stateStats) {
+            // 重置所有状态节点的活跃状态
+            document.querySelectorAll('.state-node').forEach(node => {
+                node.style.opacity = '0.3';
+                node.style.transform = 'scale(1)';
+            });
+            
+            // 根据统计数据高亮活跃状态
+            Object.entries(stateStats).forEach(([state, count]) => {
+                if (count > 0) {
+                    const nodeId = getStateNodeId(state);
+                    const node = document.getElementById(nodeId);
+                    if (node) {
+                        node.style.opacity = '1';
+                        node.style.transform = 'scale(' + Math.min(1.5, 1 + count * 0.1) + ')';
+                    }
+                }
+            });
+        }
+        
+        function getStateClass(state) {
+            const stateClasses = {
+                'CLOSED': 'state-closed',
+                'SYN_SENT': 'state-syn-sent',
+                'SYN_RECEIVED': 'state-syn-received',
+                'ESTABLISHED': 'state-established',
+                'FIN_WAIT': 'state-fin-wait',
+                'RESET': 'state-reset'
+            };
+            return stateClasses[state] || 'state-unknown';
+        }
+        
+        function getStateNodeId(state) {
+            const nodeIds = {
+                'CLOSED': 'closed-state',
+                'SYN_SENT': 'syn-sent-state',
+                'SYN_RECEIVED': 'syn-received-state',
+                'ESTABLISHED': 'established-state',
+                'FIN_WAIT': 'fin-wait-state',
+                'RESET': 'reset-state'
+            };
+            return nodeIds[state];
+        }
+        
+        function startTCPVisualizationUpdates() {
+            // 每2秒更新一次TCP状态可视化
+            setInterval(updateTCPVisualization, 2000);
+        }
+
         function startPacketUpdates() {
             setInterval(async () => {
                 try {
@@ -250,11 +461,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
                     console.error('更新数据包列表失败:', error);
                 }
             }, 2000);
+            
+            // 同时启动TCP状态可视化更新
+            startTCPVisualizationUpdates();
         }
 
         // 页面加载时初始化
         window.onload = function() {
             loadPCAPList();
+            // 初始加载TCP状态可视化
+            updateTCPVisualization();
         };
     </script>
 </body>
@@ -522,4 +738,264 @@ func (s *Server) startPacketProcessing() {
 			log.Printf("数据包捕获错误: %v", err)
 		}
 	}
+}
+
+// handleFilters handles CRUD operations for filters
+func (s *Server) handleFilters(w http.ResponseWriter, r *http.Request) {
+	fm := s.capturer.GetFilterManager()
+	
+	switch r.Method {
+	case http.MethodGet:
+		// 获取所有过滤器
+		filters := fm.ListFilters()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(filters)
+		
+	case http.MethodPost:
+		// 创建新过滤器
+		var rule models.FilterRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		
+		if err := fm.AddFilter(&rule); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rule)
+		
+	case http.MethodPut:
+		// 更新过滤器
+		filterID := r.URL.Query().Get("id")
+		if filterID == "" {
+			http.Error(w, "Filter ID required", http.StatusBadRequest)
+			return
+		}
+		
+		var updates models.FilterRule
+		if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		
+		if err := fm.UpdateFilter(filterID, &updates); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		
+		updated, _ := fm.GetFilter(filterID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(updated)
+		
+	case http.MethodDelete:
+		// 删除过滤器
+		filterID := r.URL.Query().Get("id")
+		if filterID == "" {
+			http.Error(w, "Filter ID required", http.StatusBadRequest)
+			return
+		}
+		
+		if err := fm.DeleteFilter(filterID); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		
+		w.WriteHeader(http.StatusNoContent)
+		
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleValidateFilter validates a BPF filter expression
+func (s *Server) handleValidateFilter(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var request struct {
+		Expression string `json:"expression"`
+	}
+	
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	
+	fm := s.capturer.GetFilterManager()
+	result := fm.ValidateFilter(request.Expression)
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// handleFilterPresets returns preset filter templates
+func (s *Server) handleFilterPresets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	fm := s.capturer.GetFilterManager()
+	presets := fm.GetPresetFilters()
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(presets)
+}
+
+// handleActiveFilter manages the active filter
+func (s *Server) handleActiveFilter(w http.ResponseWriter, r *http.Request) {
+	fm := s.capturer.GetFilterManager()
+	
+	switch r.Method {
+	case http.MethodGet:
+		// 获取当前活动过滤器
+		activeFilter := fm.GetActiveFilter()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(activeFilter)
+		
+	case http.MethodPost:
+		// 设置活动过滤器
+		var request models.FilterRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		
+		var response models.FilterResponse
+		
+		// 如果提供了直接表达式，先验证并可选保存
+		if request.Expression != "" {
+			validation := fm.ValidateFilter(request.Expression)
+			if !validation.IsValid {
+				response.Status = "error"
+				response.Message = "Invalid filter expression"
+				response.ErrorDetails = validation.ErrorMessage
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+				return
+			}
+			
+			// 如果需要保存为新过滤器
+			if request.SaveAs != "" {
+				rule := &models.FilterRule{
+					Name:        request.SaveAs,
+					Expression:  request.Expression,
+					Description: "Auto-created from API",
+					IsActive:    true,
+				}
+				if err := fm.AddFilter(rule); err != nil {
+					response.Status = "error"
+					response.Message = "Failed to save filter"
+					response.ErrorDetails = err.Error()
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(response)
+					return
+				}
+				request.FilterID = rule.ID
+			} else {
+				// 创建临时过滤器
+				rule := &models.FilterRule{
+					ID:          "temp_" + fmt.Sprintf("%d", time.Now().UnixNano()),
+					Name:        "Temporary Filter",
+					Expression:  request.Expression,
+					Description: "Temporary filter from API",
+					IsActive:    true,
+				}
+				fm.AddFilter(rule)
+				request.FilterID = rule.ID
+			}
+		}
+		
+		// 设置活动过滤器
+		if err := fm.SetActiveFilter(request.FilterID); err != nil {
+			response.Status = "error"
+			response.Message = "Failed to set active filter"
+			response.ErrorDetails = err.Error()
+		} else {
+			response.Status = "success"
+			response.Message = "Filter applied successfully"
+			response.AppliedRule = fm.GetActiveFilter()
+			response.Stats = fm.GetStats()
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		
+	case http.MethodDelete:
+		// 清除活动过滤器
+		fm.SetActiveFilter("")
+		
+		response := models.FilterResponse{
+			Status:  "success",
+			Message: "Active filter cleared",
+			Stats:   fm.GetStats(),
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleFilterStats returns filter statistics
+func (s *Server) handleFilterStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	stats := s.capturer.GetFilterStats()
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+// handleTCPVisualization returns TCP state visualization data
+func (s *Server) handleTCPVisualization(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	data := s.analyzer.GetTCPVisualizationData()
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+// handleTCPConnectionState returns state information for a specific TCP connection
+func (s *Server) handleTCPConnectionState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// 从URL路径中提取connection ID
+	path := r.URL.Path
+	if !strings.HasPrefix(path, "/api/tcp/connection/") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	
+	connectionID := strings.TrimPrefix(path, "/api/tcp/connection/")
+	if connectionID == "" {
+		http.Error(w, "Connection ID required", http.StatusBadRequest)
+		return
+	}
+	
+	connState, err := s.analyzer.GetTCPConnectionState(connectionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(connState)
 }

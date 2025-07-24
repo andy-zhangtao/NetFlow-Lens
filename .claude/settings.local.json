@@ -17,7 +17,9 @@
       "Bash(go get:*)",
       "Bash(./build/netflow-lens:*)",
       "Bash(go test:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(go doc:*)",
+      "Bash(go:*)"
     ],
     "deny": []
   }

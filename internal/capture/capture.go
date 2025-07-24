@@ -12,24 +12,29 @@ import (
 	"github.com/google/gopacket/pcap"
 
 	"github.com/andy-zhangtao/NetFlow-Lens/pkg/models"
+	"github.com/andy-zhangtao/NetFlow-Lens/internal/filter"
 )
 
 // Capturer handles network packet capture
 type Capturer struct {
-	isRunning    bool
-	packets      chan models.Packet
-	handle       *pcap.Handle
-	source       string // 可以是网卡接口名或pcap文件路径
-	sourceType   string // "interface" 或 "file"
-	packetCount  int
-	errorChannel chan error
+	isRunning      bool
+	packets        chan models.Packet
+	handle         *pcap.Handle
+	source         string // 可以是网卡接口名或pcap文件路径
+	sourceType     string // "interface" 或 "file"
+	packetCount    int
+	errorChannel   chan error
+	filterManager  *filter.FilterManager
+	filteredCount  int64
+	droppedCount   int64
 }
 
 // NewCapturer creates a new packet capturer
 func NewCapturer() *Capturer {
 	return &Capturer{
-		packets:      make(chan models.Packet, 1000),
-		errorChannel: make(chan error, 10),
+		packets:       make(chan models.Packet, 1000),
+		errorChannel:  make(chan error, 10),
+		filterManager: filter.NewFilterManager(),
 	}
 }
 
@@ -56,12 +61,23 @@ func (c *Capturer) StartLiveCapture(interfaceName string) error {
 		return fmt.Errorf("failed to open interface %s: %v", interfaceName, err)
 	}
 
+	// 应用 BPF 过滤器（如果有活动过滤器）
+	if err := c.applyBPFFilter(handle); err != nil {
+		handle.Close()
+		return fmt.Errorf("failed to apply BPF filter: %v", err)
+	}
+
 	c.handle = handle
 	c.source = interfaceName
 	c.sourceType = "interface"
 	c.isRunning = true
+	c.resetStats()
 
-	log.Printf("开始从网卡 %s 捕获数据包...", interfaceName)
+	filterInfo := ""
+	if activeFilter := c.filterManager.GetActiveFilter(); activeFilter != nil {
+		filterInfo = fmt.Sprintf(" (过滤器: %s)", activeFilter.Name)
+	}
+	log.Printf("开始从网卡 %s 捕获数据包%s...", interfaceName, filterInfo)
 
 	// 启动数据包处理协程
 	go c.processPackets()
@@ -86,12 +102,23 @@ func (c *Capturer) StartFileCapture(filename string) error {
 		return fmt.Errorf("failed to open pcap file %s: %v", filename, err)
 	}
 
+	// 应用 BPF 过滤器（如果有活动过滤器）
+	if err := c.applyBPFFilter(handle); err != nil {
+		handle.Close()
+		return fmt.Errorf("failed to apply BPF filter: %v", err)
+	}
+
 	c.handle = handle
 	c.source = filename
 	c.sourceType = "file"
 	c.isRunning = true
+	c.resetStats()
 
-	log.Printf("开始读取pcap文件: %s", filename)
+	filterInfo := ""
+	if activeFilter := c.filterManager.GetActiveFilter(); activeFilter != nil {
+		filterInfo = fmt.Sprintf(" (过滤器: %s)", activeFilter.Name)
+	}
+	log.Printf("开始读取pcap文件: %s%s", filename, filterInfo)
 
 	// 启动数据包处理协程
 	go c.processPackets()
@@ -177,11 +204,13 @@ func (c *Capturer) processPackets() {
 			select {
 			case c.packets <- *parsedPacket:
 				c.packetCount++
+				c.filteredCount++ // 成功发送到通道的数据包
 				if c.packetCount%50 == 0 { // 降低日志频率
 					log.Printf("已处理 %d 个数据包", c.packetCount)
 				}
 			default:
 				log.Println("数据包通道已满，丢弃数据包")
+				c.droppedCount++ // 因通道满而丢弃的数据包
 			}
 		}
 	}
@@ -322,4 +351,65 @@ func IsValidInterface(interfaceName string) bool {
 		}
 	}
 	return false
+}
+
+// GetFilterManager returns the filter manager
+func (c *Capturer) GetFilterManager() *filter.FilterManager {
+	return c.filterManager
+}
+
+// applyBPFFilter applies the active BPF filter to the pcap handle
+func (c *Capturer) applyBPFFilter(handle *pcap.Handle) error {
+	expression := c.filterManager.GetActiveFilterExpression()
+	if expression == "" {
+		// 没有活动过滤器，不应用任何过滤
+		return nil
+	}
+
+	log.Printf("应用 BPF 过滤器: %s", expression)
+	err := handle.SetBPFFilter(expression)
+	if err != nil {
+		return fmt.Errorf("failed to set BPF filter '%s': %v", expression, err)
+	}
+
+	return nil
+}
+
+// resetStats resets capture statistics
+func (c *Capturer) resetStats() {
+	c.packetCount = 0
+	c.filteredCount = 0
+	c.droppedCount = 0
+}
+
+// updateFilterStats updates filter statistics
+func (c *Capturer) updateFilterStats() {
+	totalPackets := int64(c.packetCount)
+	
+	// 获取 pcap 统计信息
+	var filteredPackets, droppedPackets int64
+	if c.handle != nil {
+		if stats, err := c.handle.Stats(); err == nil {
+			// pcap stats 返回的是硬件级别的统计
+			filteredPackets = int64(stats.PacketsReceived)
+			droppedPackets = int64(stats.PacketsDropped)
+		}
+	}
+
+	// 如果没有硬件统计，使用我们自己的计数
+	if filteredPackets == 0 {
+		filteredPackets = c.filteredCount
+	}
+	if droppedPackets == 0 {
+		droppedPackets = c.droppedCount
+	}
+
+	// 更新过滤器管理器的统计信息
+	c.filterManager.UpdateStats(totalPackets, filteredPackets, droppedPackets)
+}
+
+// GetFilterStats returns current filter statistics
+func (c *Capturer) GetFilterStats() *models.FilterStats {
+	c.updateFilterStats()
+	return c.filterManager.GetStats()
 }

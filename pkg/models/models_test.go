@@ -356,3 +356,390 @@ func BenchmarkConnectionMarshal(b *testing.B) {
 		}
 	}
 }
+
+// Filter model tests
+func TestFilterRule(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name string
+		rule FilterRule
+	}{
+		{
+			name: "tcp port filter",
+			rule: FilterRule{
+				ID:          "filter_1",
+				Name:        "HTTP Traffic",
+				Expression:  "tcp port 80",
+				Description: "Captures HTTP web traffic",
+				IsActive:    true,
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			},
+		},
+		{
+			name: "complex filter",
+			rule: FilterRule{
+				ID:          "filter_2",
+				Name:        "Web Traffic",
+				Expression:  "tcp port 80 or tcp port 443",
+				Description: "Captures HTTP and HTTPS traffic",
+				IsActive:    false,
+				CreatedAt:   now,
+				UpdatedAt:   now.Add(time.Hour),
+			},
+		},
+		{
+			name: "minimal filter",
+			rule: FilterRule{
+				ID:         "filter_3",
+				Name:       "Test",
+				Expression: "tcp",
+				IsActive:   true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.rule)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled FilterRule
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.ID != tt.rule.ID {
+				t.Errorf("ID mismatch: got %s, want %s", unmarshaled.ID, tt.rule.ID)
+			}
+			if unmarshaled.Name != tt.rule.Name {
+				t.Errorf("Name mismatch: got %s, want %s", unmarshaled.Name, tt.rule.Name)
+			}
+			if unmarshaled.Expression != tt.rule.Expression {
+				t.Errorf("Expression mismatch: got %s, want %s", unmarshaled.Expression, tt.rule.Expression)
+			}
+			if unmarshaled.IsActive != tt.rule.IsActive {
+				t.Errorf("IsActive mismatch: got %v, want %v", unmarshaled.IsActive, tt.rule.IsActive)
+			}
+		})
+	}
+}
+
+func TestFilterStats(t *testing.T) {
+	tests := []struct {
+		name  string
+		stats FilterStats
+	}{
+		{
+			name: "basic stats",
+			stats: FilterStats{
+				TotalPackets:    1000,
+				FilteredPackets: 800,
+				DroppedPackets:  10,
+				FilterRatio:     0.8,
+			},
+		},
+		{
+			name: "zero stats",
+			stats: FilterStats{
+				TotalPackets:    0,
+				FilteredPackets: 0,
+				DroppedPackets:  0,
+				FilterRatio:     0.0,
+			},
+		},
+		{
+			name: "perfect filter",
+			stats: FilterStats{
+				TotalPackets:    500,
+				FilteredPackets: 500,
+				DroppedPackets:  0,
+				FilterRatio:     1.0,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.stats)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled FilterStats
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.TotalPackets != tt.stats.TotalPackets {
+				t.Errorf("TotalPackets mismatch: got %d, want %d", unmarshaled.TotalPackets, tt.stats.TotalPackets)
+			}
+			if unmarshaled.FilteredPackets != tt.stats.FilteredPackets {
+				t.Errorf("FilteredPackets mismatch: got %d, want %d", unmarshaled.FilteredPackets, tt.stats.FilteredPackets)
+			}
+			if unmarshaled.DroppedPackets != tt.stats.DroppedPackets {
+				t.Errorf("DroppedPackets mismatch: got %d, want %d", unmarshaled.DroppedPackets, tt.stats.DroppedPackets)
+			}
+			if unmarshaled.FilterRatio != tt.stats.FilterRatio {
+				t.Errorf("FilterRatio mismatch: got %f, want %f", unmarshaled.FilterRatio, tt.stats.FilterRatio)
+			}
+		})
+	}
+}
+
+func TestFilterValidationResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		result FilterValidationResult
+	}{
+		{
+			name: "valid filter",
+			result: FilterValidationResult{
+				IsValid:      true,
+				ErrorMessage: "",
+				ParsedFields: struct {
+					Protocols []string `json:"protocols"`
+					Ports     []int    `json:"ports"`
+					IPs       []string `json:"ips"`
+				}{
+					Protocols: []string{"TCP"},
+					Ports:     []int{80, 443},
+					IPs:       []string{"192.168.1.1"},
+				},
+			},
+		},
+		{
+			name: "invalid filter",
+			result: FilterValidationResult{
+				IsValid:      false,
+				ErrorMessage: "syntax error in filter expression",
+				ParsedFields: struct {
+					Protocols []string `json:"protocols"`
+					Ports     []int    `json:"ports"`
+					IPs       []string `json:"ips"`
+				}{
+					Protocols: []string{},
+					Ports:     []int{},
+					IPs:       []string{},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.result)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled FilterValidationResult
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.IsValid != tt.result.IsValid {
+				t.Errorf("IsValid mismatch: got %v, want %v", unmarshaled.IsValid, tt.result.IsValid)
+			}
+			if unmarshaled.ErrorMessage != tt.result.ErrorMessage {
+				t.Errorf("ErrorMessage mismatch: got %s, want %s", unmarshaled.ErrorMessage, tt.result.ErrorMessage)
+			}
+		})
+	}
+}
+
+func TestPresetFilter(t *testing.T) {
+	tests := []struct {
+		name   string
+		preset PresetFilter
+	}{
+		{
+			name: "http preset",
+			preset: PresetFilter{
+				ID:          "preset_http",
+				Name:        "HTTP Traffic",
+				Expression:  "tcp port 80",
+				Description: "Captures HTTP web traffic",
+				Category:    "protocol",
+			},
+		},
+		{
+			name: "dns preset",
+			preset: PresetFilter{
+				ID:          "preset_dns",
+				Name:        "DNS Queries",
+				Expression:  "udp port 53",
+				Description: "Captures DNS domain resolution traffic",
+				Category:    "protocol",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.preset)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled PresetFilter
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.ID != tt.preset.ID {
+				t.Errorf("ID mismatch: got %s, want %s", unmarshaled.ID, tt.preset.ID)
+			}
+			if unmarshaled.Name != tt.preset.Name {
+				t.Errorf("Name mismatch: got %s, want %s", unmarshaled.Name, tt.preset.Name)
+			}
+			if unmarshaled.Expression != tt.preset.Expression {
+				t.Errorf("Expression mismatch: got %s, want %s", unmarshaled.Expression, tt.preset.Expression)
+			}
+			if unmarshaled.Category != tt.preset.Category {
+				t.Errorf("Category mismatch: got %s, want %s", unmarshaled.Category, tt.preset.Category)
+			}
+		})
+	}
+}
+
+func TestFilterRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		request FilterRequest
+	}{
+		{
+			name: "filter by id",
+			request: FilterRequest{
+				FilterID: "filter_123",
+			},
+		},
+		{
+			name: "filter by expression",
+			request: FilterRequest{
+				Expression: "tcp port 80",
+			},
+		},
+		{
+			name: "filter and save",
+			request: FilterRequest{
+				Expression: "udp port 53",
+				SaveAs:     "DNS Filter",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.request)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled FilterRequest
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.FilterID != tt.request.FilterID {
+				t.Errorf("FilterID mismatch: got %s, want %s", unmarshaled.FilterID, tt.request.FilterID)
+			}
+			if unmarshaled.Expression != tt.request.Expression {
+				t.Errorf("Expression mismatch: got %s, want %s", unmarshaled.Expression, tt.request.Expression)
+			}
+			if unmarshaled.SaveAs != tt.request.SaveAs {
+				t.Errorf("SaveAs mismatch: got %s, want %s", unmarshaled.SaveAs, tt.request.SaveAs)
+			}
+		})
+	}
+}
+
+func TestFilterResponse(t *testing.T) {
+	now := time.Now()
+	
+	tests := []struct {
+		name     string
+		response FilterResponse
+	}{
+		{
+			name: "successful response",
+			response: FilterResponse{
+				Status:  "success",
+				Message: "Filter applied successfully",
+				AppliedRule: &FilterRule{
+					ID:         "filter_1",
+					Name:       "HTTP",
+					Expression: "tcp port 80",
+					IsActive:   true,
+					CreatedAt:  now,
+					UpdatedAt:  now,
+				},
+				Stats: &FilterStats{
+					TotalPackets:    100,
+					FilteredPackets: 80,
+					DroppedPackets:  2,
+					FilterRatio:     0.8,
+				},
+			},
+		},
+		{
+			name: "error response",
+			response: FilterResponse{
+				Status:       "error",
+				Message:      "Invalid filter expression",
+				ErrorDetails: "Syntax error at position 10",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test JSON marshaling
+			data, err := json.Marshal(tt.response)
+			if err != nil {
+				t.Errorf("JSON marshal error: %v", err)
+			}
+
+			// Test JSON unmarshaling
+			var unmarshaled FilterResponse
+			err = json.Unmarshal(data, &unmarshaled)
+			if err != nil {
+				t.Errorf("JSON unmarshal error: %v", err)
+			}
+
+			// Compare fields
+			if unmarshaled.Status != tt.response.Status {
+				t.Errorf("Status mismatch: got %s, want %s", unmarshaled.Status, tt.response.Status)
+			}
+			if unmarshaled.Message != tt.response.Message {
+				t.Errorf("Message mismatch: got %s, want %s", unmarshaled.Message, tt.response.Message)
+			}
+			if unmarshaled.ErrorDetails != tt.response.ErrorDetails {
+				t.Errorf("ErrorDetails mismatch: got %s, want %s", unmarshaled.ErrorDetails, tt.response.ErrorDetails)
+			}
+		})
+	}
+}

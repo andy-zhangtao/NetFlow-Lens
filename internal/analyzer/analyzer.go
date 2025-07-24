@@ -11,22 +11,29 @@ import (
 
 // Analyzer processes network packets and maintains connection state
 type Analyzer struct {
-	connections   map[string]*models.Connection
-	recentPackets []models.Packet
-	mutex         sync.RWMutex
-	maxPackets    int
-	packetBuffer  []models.Packet
-	bufferIndex   int
+	connections       map[string]*models.Connection
+	recentPackets     []models.Packet
+	mutex             sync.RWMutex
+	maxPackets        int
+	packetBuffer      []models.Packet
+	bufferIndex       int
+	stateTransitions  []models.TCPStateTransition
+	connectionStats   map[string]*models.TCPConnectionState
+	maxTransitions    int
 }
 
 // NewAnalyzer creates a new packet analyzer
 func NewAnalyzer() *Analyzer {
 	maxPackets := 1000
+	maxTransitions := 500
 	return &Analyzer{
-		connections:   make(map[string]*models.Connection),
-		recentPackets: make([]models.Packet, 0, maxPackets),
-		maxPackets:    maxPackets,
-		packetBuffer:  make([]models.Packet, maxPackets),
+		connections:      make(map[string]*models.Connection),
+		recentPackets:    make([]models.Packet, 0, maxPackets),
+		maxPackets:       maxPackets,
+		packetBuffer:     make([]models.Packet, maxPackets),
+		stateTransitions: make([]models.TCPStateTransition, 0, maxTransitions),
+		connectionStats:  make(map[string]*models.TCPConnectionState),
+		maxTransitions:   maxTransitions,
 	}
 }
 
@@ -42,6 +49,10 @@ func (a *Analyzer) ClearData() {
 	a.recentPackets = make([]models.Packet, 0, a.maxPackets)
 	a.packetBuffer = make([]models.Packet, a.maxPackets)
 	a.bufferIndex = 0
+
+	// 清空状态转换数据
+	a.stateTransitions = make([]models.TCPStateTransition, 0, a.maxTransitions)
+	a.connectionStats = make(map[string]*models.TCPConnectionState)
 
 	log.Println("Analyzer数据已清空，准备处理新数据")
 }
@@ -148,27 +159,40 @@ func (a *Analyzer) updateTCPConnectionState(conn *models.Connection, packet mode
 		flags[flag] = true
 	}
 
+	oldState := conn.State
+	newState := oldState
+
 	// 状态转换逻辑
 	switch conn.State {
 	case "SYN_SENT":
 		if flags["SYN"] && flags["ACK"] {
-			conn.State = "SYN_RECEIVED"
+			newState = "SYN_RECEIVED"
 		}
 	case "SYN_RECEIVED":
 		if flags["ACK"] && !flags["SYN"] {
-			conn.State = "ESTABLISHED"
+			newState = "ESTABLISHED"
 		}
 	case "ESTABLISHED":
 		if flags["FIN"] {
-			conn.State = "FIN_WAIT"
+			newState = "FIN_WAIT"
 		} else if flags["RST"] {
-			conn.State = "RESET"
+			newState = "RESET"
 		}
 	case "FIN_WAIT":
 		if flags["ACK"] {
-			conn.State = "CLOSED"
+			newState = "CLOSED"
 		}
 	}
+
+	// 记录状态转换
+	if oldState != newState {
+		conn.State = newState
+		a.recordStateTransition(conn.ID, oldState, newState, packet)
+		log.Printf("TCP状态转换: %s %s -> %s", conn.ID, oldState, newState)
+	}
+
+	// 更新连接统计信息
+	a.updateConnectionStats(conn, packet)
 }
 
 // GetConnections returns all active connections
@@ -331,4 +355,126 @@ func (a *Analyzer) analyzeHandshake(packets []models.Packet) map[string]interfac
 	}
 
 	return nil
+}
+
+// recordStateTransition 记录TCP状态转换
+func (a *Analyzer) recordStateTransition(connectionID, fromState, toState string, packet models.Packet) {
+	transition := models.TCPStateTransition{
+		ConnectionID: connectionID,
+		FromState:    fromState,
+		ToState:      toState,
+		Timestamp:    packet.Timestamp,
+		TriggerFlags: packet.TCPFlags,
+		PacketInfo:   fmt.Sprintf("%s:%d -> %s:%d", packet.SourceIP, packet.SourcePort, packet.DestIP, packet.DestPort),
+	}
+
+	// 添加到状态转换历史
+	if len(a.stateTransitions) >= a.maxTransitions {
+		// 移除最老的转换记录
+		a.stateTransitions = a.stateTransitions[1:]
+	}
+	a.stateTransitions = append(a.stateTransitions, transition)
+}
+
+// updateConnectionStats 更新连接统计信息
+func (a *Analyzer) updateConnectionStats(conn *models.Connection, packet models.Packet) {
+	connStat, exists := a.connectionStats[conn.ID]
+	if !exists {
+		connStat = &models.TCPConnectionState{
+			Connection:    *conn,
+			StateHistory:  []models.TCPStateTransition{},
+			CurrentState:  conn.State,
+			Duration:      0,
+			PacketCount:   0,
+			BytesSent:     0,
+			BytesReceived: 0,
+			IsActive:      true,
+		}
+		a.connectionStats[conn.ID] = connStat
+	}
+
+	// 更新统计信息
+	connStat.Connection = *conn
+	connStat.CurrentState = conn.State
+	connStat.PacketCount++
+	connStat.Duration = time.Since(conn.StartTime).Seconds()
+	connStat.IsActive = (conn.State != "CLOSED" && conn.State != "RESET")
+
+	// 简单的字节统计（基于数据包长度）
+	if packet.SourceIP == conn.SourceIP {
+		connStat.BytesSent += int64(packet.Length)
+	} else {
+		connStat.BytesReceived += int64(packet.Length)
+	}
+
+	// 更新状态历史（添加最近的转换）
+	for _, transition := range a.stateTransitions {
+		if transition.ConnectionID == conn.ID {
+			// 检查是否已经存在这个转换
+			found := false
+			for _, existing := range connStat.StateHistory {
+				if existing.Timestamp.Equal(transition.Timestamp) && 
+				   existing.FromState == transition.FromState && 
+				   existing.ToState == transition.ToState {
+					found = true
+					break
+				}
+			}
+			if !found {
+				connStat.StateHistory = append(connStat.StateHistory, transition)
+			}
+		}
+	}
+}
+
+// GetTCPVisualizationData 获取TCP状态可视化数据
+func (a *Analyzer) GetTCPVisualizationData() models.TCPVisualizationData {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+
+	// 获取活动连接状态
+	activeConnections := make([]models.TCPConnectionState, 0)
+	for _, connStat := range a.connectionStats {
+		if connStat.IsActive {
+			activeConnections = append(activeConnections, *connStat)
+		}
+	}
+
+	// 计算状态统计
+	stateStats := make(map[string]int)
+	for _, conn := range a.connections {
+		stateStats[conn.State]++
+	}
+
+	// 获取最近的状态转换（最近50个）
+	recentTransitions := make([]models.TCPStateTransition, 0)
+	start := len(a.stateTransitions) - 50
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(a.stateTransitions); i++ {
+		recentTransitions = append(recentTransitions, a.stateTransitions[i])
+	}
+
+	return models.TCPVisualizationData{
+		ActiveConnections: activeConnections,
+		StateStatistics:   stateStats,
+		RecentTransitions: recentTransitions,
+		Timestamp:         time.Now(),
+	}
+}
+
+// GetTCPConnectionState 获取特定连接的状态信息
+func (a *Analyzer) GetTCPConnectionState(connectionID string) (*models.TCPConnectionState, error) {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+
+	connStat, exists := a.connectionStats[connectionID]
+	if !exists {
+		return nil, fmt.Errorf("connection %s not found", connectionID)
+	}
+
+	// 返回副本
+	result := *connStat
+	return &result, nil
 }

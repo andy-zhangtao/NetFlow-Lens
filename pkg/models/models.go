@@ -47,3 +47,33 @@ type PCAPFileInfo struct {
 	Status       string    `json:"status"` // "uploading", "processing", "ready", "error"
 	ErrorMessage string    `json:"error_message,omitempty"`
 }
+
+// TCPStateTransition represents a TCP state transition event
+type TCPStateTransition struct {
+	ConnectionID string    `json:"connection_id"`
+	FromState    string    `json:"from_state"`
+	ToState      string    `json:"to_state"`
+	Timestamp    time.Time `json:"timestamp"`
+	TriggerFlags []string  `json:"trigger_flags"`
+	PacketInfo   string    `json:"packet_info"`
+}
+
+// TCPConnectionState represents the current state of a TCP connection with visualization data
+type TCPConnectionState struct {
+	Connection    Connection           `json:"connection"`
+	StateHistory  []TCPStateTransition `json:"state_history"`
+	CurrentState  string               `json:"current_state"`
+	Duration      float64              `json:"duration"` // in seconds
+	PacketCount   int                  `json:"packet_count"`
+	BytesSent     int64                `json:"bytes_sent"`
+	BytesReceived int64                `json:"bytes_received"`
+	IsActive      bool                 `json:"is_active"`
+}
+
+// TCPVisualizationData represents all data needed for TCP state visualization
+type TCPVisualizationData struct {
+	ActiveConnections []TCPConnectionState `json:"active_connections"`
+	StateStatistics   map[string]int       `json:"state_statistics"`
+	RecentTransitions []TCPStateTransition `json:"recent_transitions"`
+	Timestamp         time.Time            `json:"timestamp"`
+}

@@ -713,3 +713,486 @@ func BenchmarkHandleConnections(b *testing.B) {
 		server.handleConnections(w, req)
 	}
 }
+
+// Filter API tests
+func TestHandleFilters(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	tests := []struct {
+		name           string
+		method         string
+		query          string
+		body           string
+		expectedStatus int
+	}{
+		{
+			name:           "get all filters",
+			method:         "GET",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "create new filter",
+			method:         "POST",
+			body:           `{"name":"HTTP Filter","expression":"tcp port 80","description":"HTTP traffic filter","is_active":true}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "create filter with invalid expression",
+			method:         "POST",
+			body:           `{"name":"Invalid Filter","expression":"invalid syntax","is_active":true}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "create filter with invalid JSON",
+			method:         "POST",
+			body:           `{invalid json}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "unsupported method",
+			method:         "PATCH",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req *http.Request
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/api/filters"+tt.query, strings.NewReader(tt.body))
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tt.method, "/api/filters"+tt.query, nil)
+			}
+			
+			w := httptest.NewRecorder()
+			server.handleFilters(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				contentType := w.Header().Get("Content-Type")
+				if contentType != "application/json" {
+					t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+				}
+
+				if tt.method == "GET" {
+					var filters []models.FilterRule
+					if err := json.NewDecoder(w.Body).Decode(&filters); err != nil {
+						t.Fatalf("Failed to decode JSON response: %v", err)
+					}
+				} else if tt.method == "POST" {
+					var filter models.FilterRule
+					if err := json.NewDecoder(w.Body).Decode(&filter); err != nil {
+						t.Fatalf("Failed to decode JSON response: %v", err)
+					}
+					if filter.ID == "" {
+						t.Error("Expected filter ID to be generated")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHandleFiltersUpdateDelete(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	// First create a filter to update/delete
+	createReq := httptest.NewRequest("POST", "/api/filters", 
+		strings.NewReader(`{"name":"Test Filter","expression":"tcp port 80","description":"Test filter","is_active":true}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.handleFilters(createW, createReq)
+
+	if createW.Code != http.StatusOK {
+		t.Fatalf("Failed to create test filter: status %d", createW.Code)
+	}
+
+	var createdFilter models.FilterRule
+	if err := json.NewDecoder(createW.Body).Decode(&createdFilter); err != nil {
+		t.Fatalf("Failed to decode create response: %v", err)
+	}
+
+	filterID := createdFilter.ID
+
+	tests := []struct {
+		name           string
+		method         string
+		query          string
+		body           string
+		expectedStatus int
+	}{
+		{
+			name:           "update filter",
+			method:         "PUT",
+			query:          "?id=" + filterID,
+			body:           `{"name":"Updated Filter","description":"Updated description"}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "update filter without ID",
+			method:         "PUT",
+			body:           `{"name":"Updated Filter"}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "update nonexistent filter",
+			method:         "PUT",
+			query:          "?id=nonexistent",
+			body:           `{"name":"Updated Filter"}`,
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:           "delete filter",
+			method:         "DELETE",
+			query:          "?id=" + filterID,
+			expectedStatus: http.StatusNoContent,
+		},
+		{
+			name:           "delete filter without ID",
+			method:         "DELETE",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "delete nonexistent filter",
+			method:         "DELETE",
+			query:          "?id=nonexistent",
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req *http.Request
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/api/filters"+tt.query, strings.NewReader(tt.body))
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tt.method, "/api/filters"+tt.query, nil)
+			}
+			
+			w := httptest.NewRecorder()
+			server.handleFilters(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var filter models.FilterRule
+				if err := json.NewDecoder(w.Body).Decode(&filter); err != nil {
+					t.Fatalf("Failed to decode JSON response: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleValidateFilter(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	tests := []struct {
+		name           string
+		method         string
+		body           string
+		expectedStatus int
+		expectValid    bool
+	}{
+		{
+			name:           "wrong method",
+			method:         "GET",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:           "invalid JSON",
+			method:         "POST",
+			body:           `{invalid json}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "valid BPF expression",
+			method:         "POST",
+			body:           `{"expression":"tcp port 80"}`,
+			expectedStatus: http.StatusOK,
+			expectValid:    true,
+		},
+		{
+			name:           "invalid BPF expression",
+			method:         "POST",
+			body:           `{"expression":"invalid syntax here"}`,
+			expectedStatus: http.StatusOK,
+			expectValid:    false,
+		},
+		{
+			name:           "empty expression",
+			method:         "POST",
+			body:           `{"expression":""}`,
+			expectedStatus: http.StatusOK,
+			expectValid:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req *http.Request
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/api/filters/validate", strings.NewReader(tt.body))
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tt.method, "/api/filters/validate", nil)
+			}
+			
+			w := httptest.NewRecorder()
+			server.handleValidateFilter(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var result models.FilterValidationResult
+				if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+					t.Fatalf("Failed to decode JSON response: %v", err)
+				}
+
+				if result.IsValid != tt.expectValid {
+					t.Errorf("Expected IsValid=%v, got %v", tt.expectValid, result.IsValid)
+				}
+
+				if !tt.expectValid && result.ErrorMessage == "" {
+					t.Error("Expected error message for invalid filter")
+				}
+			}
+		})
+	}
+}
+
+func TestHandleFilterPresets(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{
+			name:           "get presets",
+			method:         "GET",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "wrong method",
+			method:         "POST",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/api/filters/presets", nil)
+			w := httptest.NewRecorder()
+			
+			server.handleFilterPresets(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var presets []models.PresetFilter
+				if err := json.NewDecoder(w.Body).Decode(&presets); err != nil {
+					t.Fatalf("Failed to decode JSON response: %v", err)
+				}
+
+				if len(presets) == 0 {
+					t.Error("Expected at least one preset filter")
+				}
+
+				// Check for expected preset
+				foundHTTP := false
+				for _, preset := range presets {
+					if preset.ID == "preset_http" {
+						foundHTTP = true
+						if preset.Expression != "tcp port 80" {
+							t.Errorf("Expected HTTP preset expression 'tcp port 80', got '%s'", preset.Expression)
+						}
+						break
+					}
+				}
+				if !foundHTTP {
+					t.Error("Expected to find HTTP preset")
+				}
+			}
+		})
+	}
+}
+
+func TestHandleActiveFilter(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	// First create a filter to set as active
+	createReq := httptest.NewRequest("POST", "/api/filters", 
+		strings.NewReader(`{"name":"Active Test Filter","expression":"tcp port 443","description":"Test filter for active","is_active":true}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.handleFilters(createW, createReq)
+
+	if createW.Code != http.StatusOK {
+		t.Fatalf("Failed to create test filter: status %d", createW.Code)
+	}
+
+	var createdFilter models.FilterRule
+	if err := json.NewDecoder(createW.Body).Decode(&createdFilter); err != nil {
+		t.Fatalf("Failed to decode create response: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		method         string
+		body           string
+		expectedStatus int
+	}{
+		{
+			name:           "get active filter (none set)",
+			method:         "GET",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "set active filter by ID",
+			method:         "POST",
+			body:           `{"filter_id":"` + createdFilter.ID + `"}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "set active filter by expression",
+			method:         "POST",
+			body:           `{"expression":"udp port 53"}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "set active filter with save",
+			method:         "POST",
+			body:           `{"expression":"icmp","save_as":"ICMP Filter"}`,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "set active filter with invalid expression",
+			method:         "POST",
+			body:           `{"expression":"invalid syntax"}`,
+			expectedStatus: http.StatusOK, // Returns error in response body
+		},
+		{
+			name:           "invalid JSON",
+			method:         "POST",
+			body:           `{invalid json}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "clear active filter",
+			method:         "DELETE",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "unsupported method",
+			method:         "PUT",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req *http.Request
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/api/filters/active", strings.NewReader(tt.body))
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tt.method, "/api/filters/active", nil)
+			}
+			
+			w := httptest.NewRecorder()
+			server.handleActiveFilter(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				if tt.method == "GET" {
+					// Active filter response can be null or a filter rule
+					var activeFilter *models.FilterRule
+					if err := json.NewDecoder(w.Body).Decode(&activeFilter); err != nil {
+						t.Fatalf("Failed to decode JSON response: %v", err)
+					}
+				} else {
+					var response models.FilterResponse
+					if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+						t.Fatalf("Failed to decode JSON response: %v", err)
+					}
+
+					if tt.name == "set active filter with invalid expression" {
+						if response.Status != "error" {
+							t.Errorf("Expected error status for invalid expression, got '%s'", response.Status)
+						}
+					} else if response.Status != "success" {
+						t.Errorf("Expected success status, got '%s'", response.Status)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestHandleFilterStats(t *testing.T) {
+	server := NewServer()
+	defer os.RemoveAll("uploads")
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{
+			name:           "get filter stats",
+			method:         "GET",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "wrong method",
+			method:         "POST",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/api/filters/stats", nil)
+			w := httptest.NewRecorder()
+			
+			server.handleFilterStats(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedStatus == http.StatusOK {
+				var stats models.FilterStats
+				if err := json.NewDecoder(w.Body).Decode(&stats); err != nil {
+					t.Fatalf("Failed to decode JSON response: %v", err)
+				}
+
+				// Initially stats should be zero
+				if stats.TotalPackets != 0 {
+					t.Errorf("Expected initial TotalPackets=0, got %d", stats.TotalPackets)
+				}
+			}
+		})
+	}
+}
