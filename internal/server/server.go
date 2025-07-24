@@ -140,6 +140,28 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         .connection-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
         .connection-info { flex: 1; }
         .connection-state { padding: 4px 8px; border-radius: 4px; font-size: 11px; color: white; }
+
+        /* 交互功能样式 */
+        .tooltip { position: absolute; background: rgba(0,0,0,0.9); color: white; padding: 8px 12px; border-radius: 6px; font-size: 12px; pointer-events: none; z-index: 1000; max-width: 250px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+        .tooltip::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: rgba(0,0,0,0.9); }
+        
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: #fefefe; margin: 10% auto; padding: 20px; border-radius: 8px; width: 80%; max-width: 600px; max-height: 70vh; overflow-y: auto; }
+        .close { color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }
+        .close:hover { color: black; }
+        
+        .state-detail { margin: 15px 0; }
+        .state-detail h4 { margin: 10px 0 5px 0; color: #333; }
+        .state-detail .connection-item { background: #f8f9fa; margin: 5px 0; border-radius: 4px; }
+        
+        .transition-info { background: #e3f2fd; padding: 10px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #2196f3; }
+        .transition-conditions { font-size: 11px; color: #666; margin-top: 5px; }
+        
+        .state-node.selected { stroke: #ff6b35; stroke-width: 3; filter: drop-shadow(0 0 8px rgba(255,107,53,0.6)); }
+        .state-node.pulse { animation: pulse 2s infinite; }
+        
+        @keyframes pulse { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
+        @keyframes stateTransition { 0% { transform: scale(1); } 50% { transform: scale(1.3); } 100% { transform: scale(1); } }
     </style>
 </head>
 <body>
@@ -254,6 +276,19 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         </div>
     </div>
 
+    <!-- Tooltip 组件 -->
+    <div id="tooltip" class="tooltip" style="display: none;"></div>
+
+    <!-- 状态详情模态框 -->
+    <div id="state-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" id="modal-close">&times;</span>
+            <div id="modal-content-body">
+                <!-- 动态内容将在这里显示 -->
+            </div>
+        </div>
+    </div>
+
     <script>
         async function startCapture() {
             try {
@@ -341,6 +376,12 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             try {
                 const response = await fetch('/api/tcp/visualization');
                 const data = await response.json();
+                
+                // 检查状态转换动画
+                checkForStateTransitions(data);
+                
+                // 保存当前数据
+                currentTCPData = data;
                 
                 // 更新状态统计
                 updateTCPStats(data.state_statistics);
@@ -466,11 +507,258 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             startTCPVisualizationUpdates();
         }
 
+        // 全局变量存储当前的TCP数据
+        let currentTCPData = null;
+        let lastStateTransitions = [];
+
+        // TCP状态信息配置
+        const stateInfoMap = {
+            'CLOSED': {
+                description: 'TCP连接的初始状态和最终状态',
+                transitions: '→ SYN_SENT (发送SYN)',
+                conditions: '客户端调用connect()或服务器端口关闭'
+            },
+            'SYN_SENT': {
+                description: '客户端发送SYN后等待服务器响应',
+                transitions: '→ SYN_RECEIVED (收到SYN+ACK)',
+                conditions: 'SYN标志位被设置，等待SYN+ACK回应'
+            },
+            'SYN_RECEIVED': {
+                description: '服务器收到SYN，发送SYN+ACK后的状态',
+                transitions: '→ ESTABLISHED (收到ACK)',
+                conditions: 'SYN和ACK标志位被设置，等待最后的ACK'
+            },
+            'ESTABLISHED': {
+                description: 'TCP连接已建立，可以传输数据',
+                transitions: '→ FIN_WAIT (发送FIN) 或 → RESET (发送RST)',
+                conditions: '只有ACK标志位，可以正常传输数据'
+            },
+            'FIN_WAIT': {
+                description: '发起关闭连接，等待对方确认',
+                transitions: '→ CLOSED (收到ACK)',
+                conditions: 'FIN标志位被设置，开始连接关闭流程'
+            },
+            'RESET': {
+                description: '连接被重置，立即关闭',
+                transitions: '→ CLOSED (立即)',
+                conditions: 'RST标志位被设置，强制关闭连接'
+            }
+        };
+
+        // Tooltip 功能
+        function showTooltip(event, content) {
+            const tooltip = document.getElementById('tooltip');
+            tooltip.innerHTML = content;
+            tooltip.style.display = 'block';
+            
+            // 计算位置
+            const rect = event.target.getBoundingClientRect();
+            tooltip.style.left = (rect.left + rect.width / 2 - tooltip.offsetWidth / 2) + 'px';
+            tooltip.style.top = (rect.top - tooltip.offsetHeight - 10) + 'px';
+        }
+
+        function hideTooltip() {
+            document.getElementById('tooltip').style.display = 'none';
+        }
+
+        // 状态节点点击事件
+        function onStateNodeClick(state) {
+            if (!currentTCPData) return;
+            
+            // 高亮选中的状态节点
+            document.querySelectorAll('.state-node').forEach(node => {
+                node.classList.remove('selected');
+            });
+            
+            const nodeId = getStateNodeId(state);
+            const selectedNode = document.getElementById(nodeId);
+            if (selectedNode) {
+                selectedNode.classList.add('selected');
+            }
+            
+            // 显示状态详情模态框
+            showStateDetailModal(state);
+        }
+
+        // 显示状态详情模态框
+        function showStateDetailModal(state) {
+            const modal = document.getElementById('state-modal');
+            const modalBody = document.getElementById('modal-content-body');
+            
+            const stateInfo = stateInfoMap[state];
+            const stateCount = currentTCPData.state_statistics[state] || 0;
+            
+            // 获取该状态下的连接
+            const connectionsInState = currentTCPData.active_connections.filter(conn => 
+                conn.current_state === state
+            );
+            
+            // 获取相关的状态转换
+            const relatedTransitions = currentTCPData.recent_transitions.filter(trans => 
+                trans.from_state === state || trans.to_state === state
+            ).slice(-10); // 最近10个转换
+            
+            let modalContent = '<h2>TCP状态详情: ' + state + '</h2>';
+            
+            // 状态基本信息
+            if (stateInfo) {
+                modalContent += '<div class="transition-info">';
+                modalContent += '<h4>状态说明</h4>';
+                modalContent += '<p>' + stateInfo.description + '</p>';
+                modalContent += '<div class="transition-conditions">';
+                modalContent += '<strong>转换条件:</strong> ' + stateInfo.conditions + '<br>';
+                modalContent += '<strong>可能转换:</strong> ' + stateInfo.transitions;
+                modalContent += '</div>';
+                modalContent += '</div>';
+            }
+            
+            // 当前统计
+            modalContent += '<div class="state-detail">';
+            modalContent += '<h4>当前统计</h4>';
+            modalContent += '<p>处于 ' + state + ' 状态的连接数: <strong>' + stateCount + '</strong></p>';
+            modalContent += '</div>';
+            
+            // 活跃连接列表
+            if (connectionsInState.length > 0) {
+                modalContent += '<div class="state-detail">';
+                modalContent += '<h4>活跃连接 (' + connectionsInState.length + '个)</h4>';
+                connectionsInState.forEach(conn => {
+                    modalContent += '<div class="connection-item">';
+                    modalContent += '<div class="connection-info">';
+                    modalContent += '<strong>' + conn.connection.source_ip + ':' + conn.connection.source_port + 
+                                   ' → ' + conn.connection.dest_ip + ':' + conn.connection.dest_port + '</strong><br>';
+                    modalContent += '<small>持续时间: ' + Math.round(conn.duration) + 's | ';
+                    modalContent += '数据包: ' + conn.packet_count + ' | ';
+                    modalContent += '发送: ' + formatBytes(conn.bytes_sent) + ' | ';
+                    modalContent += '接收: ' + formatBytes(conn.bytes_received) + '</small>';
+                    modalContent += '</div>';
+                    modalContent += '</div>';
+                });
+                modalContent += '</div>';
+            }
+            
+            // 相关状态转换
+            if (relatedTransitions.length > 0) {
+                modalContent += '<div class="state-detail">';
+                modalContent += '<h4>最近状态转换</h4>';
+                relatedTransitions.forEach(trans => {
+                    modalContent += '<div class="connection-item">';
+                    modalContent += '<div class="connection-info">';
+                    modalContent += '<strong>' + trans.from_state + ' → ' + trans.to_state + '</strong><br>';
+                    modalContent += '<small>' + new Date(trans.timestamp).toLocaleString() + ' | ';
+                    modalContent += '触发标志: ' + (trans.trigger_flags || []).join(',') + ' | ';
+                    modalContent += trans.packet_info + '</small>';
+                    modalContent += '</div>';
+                    modalContent += '</div>';
+                });
+                modalContent += '</div>';
+            }
+            
+            modalBody.innerHTML = modalContent;
+            modal.style.display = 'block';
+        }
+
+        // 格式化字节数
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        // 初始化交互事件
+        function initializeInteractions() {
+            // 为每个状态节点添加事件监听器
+            Object.keys(stateInfoMap).forEach(state => {
+                const nodeId = getStateNodeId(state);
+                const node = document.getElementById(nodeId);
+                if (node) {
+                    // Hover 事件
+                    node.addEventListener('mouseenter', function(e) {
+                        const stateInfo = stateInfoMap[state];
+                        const count = currentTCPData ? (currentTCPData.state_statistics[state] || 0) : 0;
+                        const tooltipContent = '<strong>' + state + '</strong><br>' + 
+                                             stateInfo.description + '<br>' +
+                                             '<small>当前连接数: ' + count + '</small>';
+                        showTooltip(e, tooltipContent);
+                    });
+                    
+                    node.addEventListener('mouseleave', hideTooltip);
+                    
+                    // Click 事件
+                    node.addEventListener('click', function() {
+                        onStateNodeClick(state);
+                    });
+                }
+            });
+            
+            // 模态框关闭事件
+            document.getElementById('modal-close').addEventListener('click', function() {
+                document.getElementById('state-modal').style.display = 'none';
+                // 清除选中状态
+                document.querySelectorAll('.state-node').forEach(node => {
+                    node.classList.remove('selected');
+                });
+            });
+            
+            // 点击模态框背景关闭
+            document.getElementById('state-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.style.display = 'none';
+                    document.querySelectorAll('.state-node').forEach(node => {
+                        node.classList.remove('selected');
+                    });
+                }
+            });
+        }
+
+        // 更新TCP可视化数据时检查状态转换动画
+        function checkForStateTransitions(newData) {
+            if (!currentTCPData) return;
+            
+            const newTransitions = newData.recent_transitions || [];
+            const lastTransition = newTransitions[newTransitions.length - 1];
+            
+            if (lastTransition && 
+                (!lastStateTransitions.length || 
+                 lastTransition.timestamp !== lastStateTransitions[lastStateTransitions.length - 1]?.timestamp)) {
+                
+                // 触发状态转换动画
+                animateStateTransition(lastTransition.from_state, lastTransition.to_state);
+            }
+            
+            lastStateTransitions = [...newTransitions];
+        }
+
+        // 状态转换动画
+        function animateStateTransition(fromState, toState) {
+            const fromNodeId = getStateNodeId(fromState);
+            const toNodeId = getStateNodeId(toState);
+            
+            const fromNode = document.getElementById(fromNodeId);
+            const toNode = document.getElementById(toNodeId);
+            
+            if (fromNode && toNode) {
+                // 添加脉冲动画
+                fromNode.classList.add('pulse');
+                toNode.classList.add('pulse');
+                
+                // 2秒后移除动画
+                setTimeout(() => {
+                    fromNode.classList.remove('pulse');
+                    toNode.classList.remove('pulse');
+                }, 2000);
+            }
+        }
+
         // 页面加载时初始化
         window.onload = function() {
             loadPCAPList();
             // 初始加载TCP状态可视化
             updateTCPVisualization();
+            // 初始化交互功能
+            initializeInteractions();
         };
     </script>
 </body>
