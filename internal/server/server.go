@@ -126,6 +126,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/performance/connection/", s.handleConnectionPerformance)
 	s.mux.HandleFunc("/api/performance/export", s.handlePerformanceExport)
 	s.mux.HandleFunc("/api/performance/report", s.handlePerformanceReport)
+	
+	// 教育功能相关
+	s.mux.HandleFunc("/api/education/layers", s.handleLayerModel)
+	s.mux.HandleFunc("/api/education/packet-journey", s.handlePacketJourney)
 
 	// WebSocket相关
 	s.mux.HandleFunc("/ws", s.handleWebSocket)
@@ -266,10 +270,137 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
         .grade-breakdown { display: flex; flex-wrap: wrap; gap: 10px; }
         .grade-item { padding: 8px 12px; border-radius: 20px; font-size: 12px; }
         
+        /* 网络分层模型样式 */
+        .layer-model-controls { margin-bottom: 20px; text-align: center; }
+        .layer-model-controls button { margin: 0 10px; }
+        .layer-model-visualization { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .layer-model { background: #f8f9fa; padding: 20px; border-radius: 8px; }
+        .packet-journey { background: #e3f2fd; padding: 20px; border-radius: 8px; }
+        
+        .layer-item { 
+            background: #fff; 
+            margin: 10px 0; 
+            padding: 15px; 
+            border-radius: 6px; 
+            border-left: 4px solid #007bff;
+            position: relative;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        .layer-item:hover { transform: translateX(5px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .layer-item.active { 
+            border-left-color: #28a745; 
+            background: #e8f5e8;
+            animation: layerPulse 2s infinite;
+        }
+        .layer-item.processing { 
+            border-left-color: #ffc107; 
+            background: #fff3cd;
+        }
+        
+        .layer-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .layer-name { font-weight: bold; color: #333; }
+        .layer-level { background: #007bff; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+        .layer-description { font-size: 14px; color: #666; margin-bottom: 10px; }
+        .layer-protocols { display: flex; flex-wrap: wrap; gap: 5px; }
+        .protocol-tag { 
+            background: #e9ecef; 
+            padding: 2px 6px; 
+            border-radius: 4px; 
+            font-size: 11px; 
+            color: #495057;
+        }
+        .protocol-tag.encrypted { background: #d4edda; color: #155724; }
+        
+        .layer-stats { 
+            display: grid; 
+            grid-template-columns: repeat(3, 1fr); 
+            gap: 10px; 
+            margin-top: 10px; 
+            padding-top: 10px; 
+            border-top: 1px solid #dee2e6;
+        }
+        .layer-stat { text-align: center; }
+        .layer-stat-value { font-weight: bold; color: #007bff; }
+        .layer-stat-label { font-size: 11px; color: #666; }
+        
+        .packet-flow { margin: 20px 0; }
+        .packet-flow-step { 
+            background: #fff; 
+            margin: 10px 0; 
+            padding: 12px; 
+            border-radius: 4px; 
+            border-left: 3px solid #28a745;
+            position: relative;
+        }
+        .packet-flow-step.current { 
+            border-left-color: #ffc107; 
+            background: #fff3cd;
+            animation: stepHighlight 1s ease-in-out;
+        }
+        .packet-flow-step.completed { 
+            border-left-color: #6c757d; 
+            background: #f8f9fa; 
+            opacity: 0.7;
+        }
+        
+        .step-header { font-weight: bold; margin-bottom: 5px; }
+        .step-operation { font-size: 13px; color: #666; margin: 3px 0; }
+        .step-result { font-size: 12px; color: #28a745; background: #d4edda; padding: 2px 6px; border-radius: 3px; display: inline-block; }
+        .step-duration { font-size: 11px; color: #999; float: right; }
+        
+        .encapsulation-view { margin: 20px 0; }
+        .encapsulation-step { 
+            background: #fff; 
+            margin: 15px 0; 
+            padding: 15px; 
+            border-radius: 6px; 
+            border: 1px solid #dee2e6;
+        }
+        .encapsulation-before, .encapsulation-after { 
+            background: #f8f9fa; 
+            padding: 10px; 
+            border-radius: 4px; 
+            margin: 5px 0; 
+            font-family: monospace; 
+            font-size: 12px;
+        }
+        .encapsulation-arrow { 
+            text-align: center; 
+            margin: 10px 0; 
+            font-size: 20px; 
+            color: #007bff;
+        }
+        
+        .header-fields { margin: 10px 0; }
+        .header-field { 
+            display: inline-block; 
+            background: #e9ecef; 
+            padding: 4px 8px; 
+            margin: 2px; 
+            border-radius: 4px; 
+            font-size: 11px;
+        }
+        .header-field.important { background: #fff3cd; border: 1px solid #ffc107; }
+        
+        @keyframes layerPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        @keyframes stepHighlight {
+            0% { background: #fff3cd; }
+            100% { background: #fff; }
+        }
+        
+        .animation-controls { text-align: center; margin: 20px 0; }
+        .animation-speed { margin: 0 10px; }
+        
         @media (max-width: 768px) {
             .performance-charts { grid-template-columns: 1fr; }
             .performance-metrics { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
             .summary-grid, .metrics-grid { grid-template-columns: 1fr; }
+            .layer-model-visualization { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -448,6 +579,24 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
                             </tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>🎓 网络分层模型学习</h3>
+            <div class="layer-model-controls">
+                <button class="btn" onclick="switchLayerModel('TCP_IP')">TCP/IP模型</button>
+                <button class="btn btn-secondary" onclick="switchLayerModel('OSI')\">OSI模型</button>
+                <button class="btn btn-success" onclick="togglePacketAnimation()">开启/关闭动画</button>
+            </div>
+            <div class="layer-model-visualization" id="layer-model-container">
+                <div class="layer-model" id="layer-model">
+                    <!-- 动态渲染网络分层模型 -->
+                </div>
+                <div class="packet-journey" id="packet-journey">
+                    <h4>数据包处理过程</h4>
+                    <div id="packet-processing-steps"></div>
                 </div>
             </div>
         </div>
@@ -1437,6 +1586,255 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             modal.style.display = 'block';
         }
 
+        // 网络分层模型相关变量
+        let currentLayerModel = null;
+        let packetJourneys = [];
+        let animationEnabled = false;
+        let animationTimer = null;
+        let currentModelType = 'TCP_IP';
+
+        // 网络分层模型相关函数
+        async function updateLayerModel() {
+            try {
+                const response = await fetch('/api/education/layers');
+                const layerModel = await response.json();
+                currentLayerModel = layerModel;
+                renderLayerModel(layerModel);
+            } catch (error) {
+                console.error('更新网络分层模型失败:', error);
+            }
+        }
+
+        function renderLayerModel(layerModel) {
+            const container = document.getElementById('layer-model');
+            if (!container || !layerModel) return;
+
+            let html = '<h4>' + layerModel.model_type + ' 网络分层模型</h4>';
+            
+            // 按层级倒序排列（应用层在顶部）
+            const sortedLayers = [...layerModel.layers].sort((a, b) => b.level - a.level);
+            
+            sortedLayers.forEach(layer => {
+                const activeClass = layer.is_active ? 'active' : '';
+                const throughput = layer.data_flow ? formatThroughput(layer.data_flow.throughput) : '0 bps';
+                
+                html += '<div class="layer-item ' + activeClass + '" onclick="showLayerDetails(\'' + layer.id + '\')">';
+                html += '<div class="layer-header">';
+                html += '<span class="layer-name">' + layer.name + ' (' + layer.english_name + ')</span>';
+                html += '<span class="layer-level">L' + layer.level + '</span>';
+                html += '</div>';
+                html += '<div class="layer-description">' + layer.description + '</div>';
+                
+                // 协议标签
+                if (layer.protocols && layer.protocols.length > 0) {
+                    html += '<div class="layer-protocols">';
+                    layer.protocols.forEach(protocol => {
+                        const encryptedClass = protocol.is_encrypted ? 'encrypted' : '';
+                        html += '<span class="protocol-tag ' + encryptedClass + '">' + protocol.name + '</span>';
+                    });
+                    html += '</div>';
+                }
+                
+                // 层统计信息
+                html += '<div class="layer-stats">';
+                html += '<div class="layer-stat"><div class="layer-stat-value">' + throughput + '</div><div class="layer-stat-label">吞吐量</div></div>';
+                html += '<div class="layer-stat"><div class="layer-stat-value">' + (layer.data_flow ? layer.data_flow.packets_in : 0) + '</div><div class="layer-stat-label">数据包</div></div>';
+                html += '<div class="layer-stat"><div class="layer-stat-value">' + formatBytes(layer.data_flow ? layer.data_flow.bytes_in : 0) + '</div><div class="layer-stat-label">字节数</div></div>';
+                html += '</div>';
+                
+                html += '</div>';
+            });
+            
+            container.innerHTML = html;
+        }
+
+        async function updatePacketJourney() {
+            try {
+                const response = await fetch('/api/education/packet-journey?limit=5');
+                const journeys = await response.json();
+                packetJourneys = journeys;
+                renderPacketJourney(journeys);
+            } catch (error) {
+                console.error('更新数据包处理过程失败:', error);
+            }
+        }
+
+        function renderPacketJourney(journeys) {
+            const container = document.getElementById('packet-processing-steps');
+            if (!container || !journeys || journeys.length === 0) {
+                container.innerHTML = '<p>暂无数据包处理过程...</p>';
+                return;
+            }
+
+            const latestJourney = journeys[0];
+            let html = '<h5>最新数据包: ' + latestJourney.packet_id + '</h5>';
+            html += '<div class="packet-info">';
+            html += '<strong>方向:</strong> ' + (latestJourney.direction === 'incoming' ? '接收' : '发送') + '<br>';
+            html += '<strong>协议:</strong> ' + latestJourney.original_packet.protocol + '<br>';
+            html += '<strong>大小:</strong> ' + latestJourney.original_packet.length + ' bytes<br>';
+            html += '<strong>时间:</strong> ' + new Date(latestJourney.start_time).toLocaleTimeString();
+            html += '</div>';
+
+            // 渲染处理步骤
+            html += '<div class="packet-flow">';
+            latestJourney.layer_analysis.forEach((analysis, index) => {
+                const currentClass = animationEnabled && index === latestJourney.current_layer - 1 ? 'current' : '';
+                const completedClass = index < latestJourney.current_layer - 1 ? 'completed' : '';
+                
+                html += '<div class="packet-flow-step ' + currentClass + ' ' + completedClass + '">';
+                html += '<div class="step-header">' + getLayerName(analysis.layer_id) + ' 处理</div>';
+                
+                if (analysis.operations && analysis.operations.length > 0) {
+                    analysis.operations.forEach(operation => {
+                        html += '<div class="step-operation">';
+                        html += '🔧 ' + operation.name + ': ' + operation.description;
+                        html += '<span class="step-duration">' + operation.duration_ms.toFixed(1) + 'ms</span>';
+                        html += '</div>';
+                        if (operation.result) {
+                            html += '<div class="step-result">' + operation.result + '</div>';
+                        }
+                    });
+                }
+                
+                if (analysis.header_data && analysis.header_data.length > 0) {
+                    html += '<div class="header-fields">';
+                    analysis.header_data.forEach(field => {
+                        const importantClass = field.is_important ? 'important' : '';
+                        html += '<span class="header-field ' + importantClass + '">' + field.name;
+                        if (field.value) {
+                            html += ': ' + field.value;
+                        }
+                        html += '</span>';
+                    });
+                    html += '</div>';
+                }
+                
+                html += '</div>';
+            });
+            html += '</div>';
+
+            // 渲染封装过程
+            if (latestJourney.encapsulation && latestJourney.encapsulation.length > 0) {
+                html += '<div class="encapsulation-view">';
+                html += '<h5>数据封装过程</h5>';
+                latestJourney.encapsulation.forEach(step => {
+                    html += '<div class="encapsulation-step">';
+                    html += '<strong>' + getLayerName(step.layer_id) + ' 封装</strong>';
+                    html += '<div class="encapsulation-before">' + step.before.visualization + '</div>';
+                    html += '<div class="encapsulation-arrow">⬇️ 添加 ' + getLayerName(step.layer_id) + ' 首部</div>';
+                    html += '<div class="encapsulation-after">' + step.after.visualization + '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+
+            container.innerHTML = html;
+        }
+
+        function switchLayerModel(modelType) {
+            currentModelType = modelType;
+            // 这里可以扩展切换到OSI模型
+            updateLayerModel();
+        }
+
+        function togglePacketAnimation() {
+            animationEnabled = !animationEnabled;
+            if (animationEnabled) {
+                startPacketAnimation();
+            } else {
+                stopPacketAnimation();
+            }
+        }
+
+        function startPacketAnimation() {
+            if (animationTimer) clearInterval(animationTimer);
+            animationTimer = setInterval(() => {
+                updatePacketJourney();
+            }, 3000); // 每3秒更新一次
+        }
+
+        function stopPacketAnimation() {
+            if (animationTimer) {
+                clearInterval(animationTimer);
+                animationTimer = null;
+            }
+        }
+
+        function showLayerDetails(layerId) {
+            if (!currentLayerModel) return;
+            
+            const layer = currentLayerModel.layers.find(l => l.id === layerId);
+            if (!layer) return;
+            
+            // 显示层详情的模态框
+            const modal = document.getElementById('state-modal');
+            const modalBody = document.getElementById('modal-content-body');
+            
+            let modalContent = '<h2>📚 ' + layer.name + ' 详解</h2>';
+            modalContent += '<div class="layer-detail-content">';
+            modalContent += '<h3>基本信息</h3>';
+            modalContent += '<p><strong>英文名称:</strong> ' + layer.english_name + '</p>';
+            modalContent += '<p><strong>层级:</strong> 第' + layer.level + '层</p>';
+            modalContent += '<p><strong>描述:</strong> ' + layer.description + '</p>';
+            
+            modalContent += '<h3>主要功能</h3>';
+            modalContent += '<ul>';
+            layer.functions.forEach(func => {
+                modalContent += '<li>' + func + '</li>';
+            });
+            modalContent += '</ul>';
+            
+            if (layer.protocols && layer.protocols.length > 0) {
+                modalContent += '<h3>常用协议</h3>';
+                layer.protocols.forEach(protocol => {
+                    modalContent += '<div class="protocol-detail">';
+                    modalContent += '<h4>' + protocol.name + ' - ' + protocol.full_name + '</h4>';
+                    modalContent += '<p><strong>用途:</strong> ' + protocol.purpose + '</p>';
+                    modalContent += '<p><strong>示例:</strong> ' + protocol.example + '</p>';
+                    if (protocol.is_encrypted) {
+                        modalContent += '<p><span class="encryption-indicator">🔒 提供加密保护</span></p>';
+                    }
+                    modalContent += '</div>';
+                });
+            }
+            
+            if (layer.examples && layer.examples.length > 0) {
+                modalContent += '<h3>实际应用</h3>';
+                modalContent += '<ul>';
+                layer.examples.forEach(example => {
+                    modalContent += '<li>' + example + '</li>';
+                });
+                modalContent += '</ul>';
+            }
+            
+            modalContent += '</div>';
+            
+            modalBody.innerHTML = modalContent;
+            modal.style.display = 'block';
+        }
+
+        function getLayerName(layerId) {
+            const layerNames = {
+                'physical': '物理层',
+                'datalink': '数据链路层',
+                'network': '网络层',
+                'transport': '传输层',
+                'application': '应用层'
+            };
+            return layerNames[layerId] || layerId;
+        }
+
+        function startEducationalUpdates() {
+            setInterval(function() {
+                if (!wsConnected) {
+                    updateLayerModel();
+                    if (animationEnabled) {
+                        updatePacketJourney();
+                    }
+                }
+            }, 5000); // 每5秒更新一次
+        }
+
         // 页面加载时初始化
         window.onload = function() {
             loadPCAPList();
@@ -1447,6 +1845,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
             // 初始化性能分析
             updatePerformanceAnalysis();
             startPerformanceUpdates();
+            // 初始化教育功能
+            updateLayerModel();
+            updatePacketJourney();
+            startEducationalUpdates();
             // 建立WebSocket连接
             connectWebSocket();
         };
@@ -2491,4 +2893,41 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ==================== Educational API Handlers ====================
+
+// handleLayerModel returns the network layer model for educational visualization
+func (s *Server) handleLayerModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	layerModel := s.analyzer.GetLayerModel()
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(layerModel)
+}
+
+// handlePacketJourney returns packet processing journey for educational purposes
+func (s *Server) handlePacketJourney(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	// Get limit from query parameters
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10 // default limit
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	
+	journeys := s.analyzer.GetPacketJourney(limit)
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(journeys)
 }

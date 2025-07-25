@@ -25,6 +25,7 @@ type Analyzer struct {
 	maxTransitions      int
 	stateChangeCallback TCPStateChangeCallback
 	performanceAnalyzer *PerformanceAnalyzer
+	educationalAnalyzer *EducationalAnalyzer
 }
 
 // NewAnalyzer creates a new packet analyzer
@@ -40,6 +41,7 @@ func NewAnalyzer() *Analyzer {
 		connectionStats:     make(map[string]*models.TCPConnectionState),
 		maxTransitions:      maxTransitions,
 		performanceAnalyzer: NewPerformanceAnalyzer(),
+		educationalAnalyzer: NewEducationalAnalyzer(),
 	}
 }
 
@@ -62,6 +64,9 @@ func (a *Analyzer) ClearData() {
 
 	// 清空性能分析数据
 	a.performanceAnalyzer.ClearData()
+	
+	// 清空教育分析数据
+	a.educationalAnalyzer.ClearData()
 
 	log.Println("Analyzer数据已清空，准备处理新数据")
 }
@@ -98,6 +103,9 @@ func (a *Analyzer) ProcessPacket(packet models.Packet) {
 		if connID != "" {
 			a.performanceAnalyzer.ProcessPacket(packet, connID)
 		}
+		
+		// 进行教育分析
+		a.educationalAnalyzer.ProcessPacketForEducation(packet)
 	}
 
 	// 调试日志
@@ -521,4 +529,21 @@ func (a *Analyzer) GetConnectionPerformanceMetrics(connectionID string) (*models
 // SetPerformanceUpdateCallback 设置性能数据更新回调
 func (a *Analyzer) SetPerformanceUpdateCallback(callback func()) {
 	a.performanceAnalyzer.SetUpdateCallback(callback)
+}
+
+// ==================== Educational Analysis Methods ====================
+
+// GetLayerModel 获取网络分层模型数据
+func (a *Analyzer) GetLayerModel() models.NetworkLayerModel {
+	return a.educationalAnalyzer.GetLayerModel()
+}
+
+// GetPacketJourney 获取数据包处理过程
+func (a *Analyzer) GetPacketJourney(limit int) []models.PacketJourney {
+	return a.educationalAnalyzer.GetPacketHistory(limit)
+}
+
+// SetEducationalUpdateCallback 设置教育分析更新回调
+func (a *Analyzer) SetEducationalUpdateCallback(callback func()) {
+	a.educationalAnalyzer.SetUpdateCallback(callback)
 }
